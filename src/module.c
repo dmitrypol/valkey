@@ -4236,6 +4236,17 @@ int VM_AvoidReplicaTraffic(void) {
     return !!(isPausedActionsWithUpdate(PAUSE_ACTION_REPLICA));
 }
 
+/* Abort an in-progress replication handshake or RDB transfer without
+ * reconnecting immediately. The configured primary is retained, so the
+ * replication cron may reconnect later.
+ *
+ * This function must be called from the server's main thread.
+ *
+ * Returns 1 if a handshake or RDB transfer was aborted, or 0 if neither was in progress. */
+int VM_AbortReplicationHandshake(void) {
+    return cancelReplicationHandshake(0);
+}
+
 /* Change the currently selected DB. Returns an error if the id
  * is out of range.
  *
@@ -15361,6 +15372,7 @@ void moduleRegisterCoreAPI(void) {
     REGISTER_API(MustObeyClient);
     REGISTER_API(GetContextFlags);
     REGISTER_API(AvoidReplicaTraffic);
+    REGISTER_API(AbortReplicationHandshake);
     REGISTER_API(PoolAlloc);
     REGISTER_API(CreateDataType);
     REGISTER_API(ModuleTypeSetValue);

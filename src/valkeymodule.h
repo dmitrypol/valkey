@@ -1817,6 +1817,7 @@ VALKEYMODULE_API int (*ValkeyModule_PublishMessageShard)(ValkeyModuleCtx *ctx,
                                                          ValkeyModuleString *message) VALKEYMODULE_ATTR;
 VALKEYMODULE_API int (*ValkeyModule_GetContextFlags)(ValkeyModuleCtx *ctx) VALKEYMODULE_ATTR;
 VALKEYMODULE_API int (*ValkeyModule_AvoidReplicaTraffic)(void) VALKEYMODULE_ATTR;
+VALKEYMODULE_API int (*ValkeyModule_AbortReplicationHandshake)(void) VALKEYMODULE_ATTR;
 VALKEYMODULE_API void *(*ValkeyModule_PoolAlloc)(ValkeyModuleCtx *ctx, size_t bytes)VALKEYMODULE_ATTR;
 VALKEYMODULE_API ValkeyModuleType *(*ValkeyModule_CreateDataType)(ValkeyModuleCtx *ctx,
                                                                   const char *name,
@@ -2470,6 +2471,7 @@ static int ValkeyModule_Init(ValkeyModuleCtx *ctx, const char *name, int ver, in
     VALKEYMODULE_GET_API(MustObeyClient);
     VALKEYMODULE_GET_API(GetContextFlags);
     VALKEYMODULE_GET_API(AvoidReplicaTraffic);
+    VALKEYMODULE_GET_API(AbortReplicationHandshake);
     VALKEYMODULE_GET_API(PoolAlloc);
     VALKEYMODULE_GET_API(CreateDataType);
     VALKEYMODULE_GET_API(ModuleTypeSetValue);

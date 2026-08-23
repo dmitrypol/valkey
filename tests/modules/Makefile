@@ -31,6 +31,7 @@ TEST_MODULES = \
     fork.so \
     infotest.so \
     propagate.so \
+    replication.so \
     misc.so \
     hooks.so \
     blockonkeys.so \
