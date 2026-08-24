@@ -1198,6 +1198,22 @@ void syncCommand(client *c) {
              * resync on purpose when they are not able to partially
              * resync. */
             if (primary_replid[0] != '?') server.stat_sync_partial_err++;
+            if (c->repl_data->full_sync_memory_budget_set) {
+                unsigned long long estimate = zmalloc_used_memory();
+                unsigned long long budget = c->repl_data->full_sync_memory_budget;
+                if (estimate > budget) {
+                    server.stat_sync_full_rejected_memory++;
+                    serverLog(LL_NOTICE,
+                              "Rejecting full synchronization for replica %s: primary memory estimate %llu exceeds "
+                              "budget %llu",
+                              replicationGetReplicaName(c), estimate, budget);
+                    addReplyErrorFormat(c,
+                                        "-FULLSYNCMEMORY primary memory estimate %llu exceeds replica full-sync "
+                                        "budget %llu",
+                                        estimate, budget);
+                    return;
+                }
+            }
             if (c->repl_data->replica_capa & REPLICA_CAPA_DUAL_CHANNEL) {
                 dualChannelServerLog(LL_NOTICE,
                                      "Replica %s is capable of dual channel synchronization, and partial sync "
@@ -1427,6 +1443,9 @@ void freeClientReplicationData(client *c) {
  *
  * - set-cluster-node-id <node-id>
  * Used to inform the primary of the node-id of the replica in cluster mode.
+ *
+ * - full-sync-memory-budget <bytes>
+ * Maximum additional memory the replica can admit for a full synchronization.
  * */
 void replconfCommand(client *c) {
     int j;
@@ -1557,6 +1576,15 @@ void replconfCommand(client *c) {
                 addReplyErrorFormat(c, "Unrecognized version format: %s", (char *)objectGetVal(c->argv[j + 1]));
                 return;
             }
+        } else if (!strcasecmp(objectGetVal(c->argv[j]), "full-sync-memory-budget")) {
+            unsigned long long budget;
+            sds value = objectGetVal(c->argv[j + 1]);
+            if (!string2ull(value, sdslen(value), &budget)) {
+                addReplyError(c, "invalid full-sync memory budget");
+                return;
+            }
+            c->repl_data->full_sync_memory_budget = budget;
+            c->repl_data->full_sync_memory_budget_set = 1;
         } else if (!strcasecmp(objectGetVal(c->argv[j]), "rdb-channel")) {
             long start_with_offset = 0;
             if (getRangeLongFromObjectOrReply(c, c->argv[j + 1], 0, 1, &start_with_offset, NULL) != C_OK) {
@@ -3545,6 +3573,7 @@ void dualChannelSyncHandleRdbLoadCompletion(void) {
 #define PSYNC_NOT_SUPPORTED 4
 #define PSYNC_TRY_LATER 5
 #define PSYNC_FULLRESYNC_DUAL_CHANNEL 6
+#define PSYNC_FULLRESYNC_MEMORY_REJECTED 7
 int replicaSendPsyncCommand(connection *conn) {
     char *psync_replid;
     char psync_offset[32];
@@ -3742,6 +3771,17 @@ int replicaProcessPsyncReply(connection *conn) {
         return PSYNC_FULLRESYNC_DUAL_CHANNEL;
     }
 
+    if (!strncmp(reply, "-FULLSYNCMEMORY", 15)) {
+        serverLog(LL_NOTICE,
+                  "Primary rejected full synchronization for memory safety: %s "
+                  "(replica used %llu, maxmemory %llu, limit %llu at %d%%, budget %llu)",
+                  reply, server.repl_full_sync_memory_used, server.maxmemory, server.repl_full_sync_memory_limit,
+                  server.repl_diskless_load_swapdb_max_memory_percent,
+                  server.repl_full_sync_memory_budget);
+        sdsfree(reply);
+        return PSYNC_FULLRESYNC_MEMORY_REJECTED;
+    }
+
     if (strncmp(reply, "-ERR", 4)) {
         /* If it's not an error, log the unexpected event. */
         serverLog(LL_WARNING, "Unexpected reply to PSYNC from primary: %s", reply);
@@ -3765,8 +3805,24 @@ sds getTryPsyncString(int result) {
     case PSYNC_NOT_SUPPORTED: return sdsnew("PSYNC_NOT_SUPPORTED");
     case PSYNC_TRY_LATER: return sdsnew("PSYNC_TRY_LATER");
     case PSYNC_FULLRESYNC_DUAL_CHANNEL: return sdsnew("PSYNC_FULLRESYNC_DUAL_CHANNEL");
+    case PSYNC_FULLRESYNC_MEMORY_REJECTED: return sdsnew("PSYNC_FULLRESYNC_MEMORY_REJECTED");
     default: return sdsnew("Unknown result");
     }
+}
+
+static int replicaFullSyncMemoryBudget(unsigned long long *budget, unsigned long long *used, unsigned long long *limit) {
+    int percent = server.repl_diskless_load_swapdb_max_memory_percent;
+    if (server.repl_diskless_load != REPL_DISKLESS_LOAD_SWAPDB || percent == 0) return 0;
+
+    size_t allocated = zmalloc_used_memory();
+    size_t not_counted = freeMemoryGetNotCountedMemory();
+    if (not_counted > allocated) not_counted = allocated;
+    *used = allocated - not_counted;
+
+    *limit = (server.maxmemory / 100) * percent;
+    *limit += ((server.maxmemory % 100) * percent) / 100;
+    *budget = *used >= *limit ? 0 : *limit - *used;
+    return 1;
 }
 
 int dualChannelReplMainConnSendHandshake(connection *conn, sds *err) {
@@ -3900,6 +3956,7 @@ int syncWithPrimaryHandleReceivePingReplyState(connection *conn) {
 
 int syncWithPrimaryHandleSendHandshakeState(connection *conn) {
     sds err;
+    server.repl_full_sync_memory_budget_sent = 0;
     /* AUTH with the primary if required. */
     if (server.primary_auth) {
         err = replicationSendAuth(conn);
@@ -3969,6 +4026,16 @@ int syncWithPrimaryHandleSendHandshakeState(connection *conn) {
         size_t lens[] = {strlen(argv[0]), strlen(argv[1]), CLUSTER_NAMELEN};
         err = sendCommandArgv(conn, 3, argv, lens);
         if (err) goto err;
+    }
+
+    if (replicaFullSyncMemoryBudget(&server.repl_full_sync_memory_budget,
+                                    &server.repl_full_sync_memory_used,
+                                    &server.repl_full_sync_memory_limit)) {
+        char budget[LONG_STR_SIZE];
+        ull2string(budget, sizeof(budget), server.repl_full_sync_memory_budget);
+        err = sendCommand(conn, "REPLCONF", "full-sync-memory-budget", budget, NULL);
+        if (err) goto err;
+        server.repl_full_sync_memory_budget_sent = 1;
     }
 
     return C_OK;
@@ -4063,6 +4130,18 @@ int syncWithPrimaryHandleReceiveNodeIDReplyState(connection *conn) {
                   "(Non critical) Primary does not understand "
                   "REPLCONF SET-CLUSTER-NODE-ID: %s",
                   err);
+    }
+    sdsfree(err);
+    return C_OK;
+}
+
+int syncWithPrimaryHandleReceiveFullSyncMemoryBudgetReplyState(connection *conn) {
+    sds err = receiveSynchronousResponse(conn);
+    if (err == NULL) return C_ERR;
+    if (err[0] == '-') {
+        serverLog(LL_WARNING, "Primary does not support swapdb full-sync memory admission: %s", err);
+        sdsfree(err);
+        return C_ERR;
     }
     sdsfree(err);
     return C_OK;
@@ -4262,6 +4341,9 @@ void syncWithPrimary(connection *conn) {
         if (server.cluster_enabled) {
             server.repl_state = REPL_STATE_RECEIVE_NODEID_REPLY;
             return;
+        } else if (server.repl_full_sync_memory_budget_sent) {
+            server.repl_state = REPL_STATE_RECEIVE_FULLSYNC_MEMORY_BUDGET_REPLY;
+            return;
         } else {
             server.repl_state = REPL_STATE_SEND_PSYNC;
             goto case_send_psync;
@@ -4272,7 +4354,20 @@ void syncWithPrimary(connection *conn) {
             syncWithPrimaryHandleError(&conn);
             return;
         }
+        if (server.repl_full_sync_memory_budget_sent) {
+            server.repl_state = REPL_STATE_RECEIVE_FULLSYNC_MEMORY_BUDGET_REPLY;
+            return;
+        }
         server.repl_state = REPL_STATE_SEND_PSYNC;
+        /* fall through */
+    case REPL_STATE_RECEIVE_FULLSYNC_MEMORY_BUDGET_REPLY:
+        if (server.repl_state == REPL_STATE_RECEIVE_FULLSYNC_MEMORY_BUDGET_REPLY) {
+            if (syncWithPrimaryHandleReceiveFullSyncMemoryBudgetReplyState(conn) == C_ERR) {
+                syncWithPrimaryHandleError(&conn);
+                return;
+            }
+            server.repl_state = REPL_STATE_SEND_PSYNC;
+        }
         /* fall through */
     /* Try a partial resynchronization. If we don't have a cached primary
      * replicaSendPsyncCommand() will at least try to use PSYNC
@@ -4319,7 +4414,7 @@ void syncWithPrimary(connection *conn) {
      * from scratch later, so go to the error path. This happens when
      * the server is loading the dataset or is not connected with its
      * primary and so forth. */
-    if (psync_result == PSYNC_TRY_LATER) {
+    if (psync_result == PSYNC_TRY_LATER || psync_result == PSYNC_FULLRESYNC_MEMORY_REJECTED) {
         syncWithPrimaryHandleError(&conn);
         return;
     }
