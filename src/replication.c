@@ -59,7 +59,6 @@ void replicationResurrectProvisionalPrimary(void);
 void replicationSendAck(void);
 int replicaPutOnline(client *replica);
 void replicaStartCommandStream(client *replica);
-int cancelReplicationHandshake(int reconnect);
 void replicationSteadyStateInit(void);
 void dualChannelSetupMainConnForPsync(connection *conn);
 void dualChannelSyncHandleRdbLoadCompletion(void);

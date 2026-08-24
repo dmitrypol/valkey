@@ -3248,6 +3248,7 @@ void replicationCachePrimary(client *c);
 void resizeReplicationBacklog(void);
 void replicationSetPrimary(char *ip, int port, int full_sync_required, bool disconnect_blocked);
 void replicationUnsetPrimary(void);
+int cancelReplicationHandshake(int reconnect);
 void refreshGoodReplicasCount(void);
 int checkGoodReplicasStatus(void);
 void processClientsWaitingReplicas(void);
