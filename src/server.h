@@ -399,8 +399,10 @@ typedef enum {
     REPL_STATE_RECEIVE_CAPA_REPLY,    /* Wait for REPLCONF reply */
     REPL_STATE_RECEIVE_VERSION_REPLY, /* Wait for REPLCONF reply */
     REPL_STATE_RECEIVE_NODEID_REPLY,  /* Wait for REPLCONF reply */
-    REPL_STATE_SEND_PSYNC,            /* Send PSYNC */
-    REPL_STATE_RECEIVE_PSYNC_REPLY,   /* Wait for PSYNC reply */
+    /* Wait for memory budget REPLCONF reply. */
+    REPL_STATE_RECEIVE_FULLSYNC_MEMORY_BUDGET_REPLY,
+    REPL_STATE_SEND_PSYNC,          /* Send PSYNC */
+    REPL_STATE_RECEIVE_PSYNC_REPLY, /* Wait for PSYNC reply */
     /* --- End of handshake states --- */
     REPL_STATE_TRANSFER,  /* Receiving .rdb from primary */
     REPL_STATE_CONNECTED, /* Connected to primary */
@@ -1250,13 +1252,17 @@ typedef struct ClientReplicationData {
     int replica_version;                 /* Version on the form 0xMMmmpp. */
     short replica_capa;                  /* Replica capabilities: REPLICA_CAPA_* bitwise OR. */
     short replica_req;                   /* Replica requirements: REPLICA_REQ_* */
-    uint64_t associated_rdb_client_id;   /* The client id of this replica's rdb connection */
-    time_t rdb_client_disconnect_time;   /* Time of the first freeClient call on this client. Used for delaying free. */
-    listNode *ref_repl_buf_node;         /* Referenced node of replication buffer blocks,
-                                           see the definition of replBufBlock. */
-    size_t ref_block_pos;                /* Access position of referenced buffer block,
-                                           i.e. the next offset to send. */
-    sds replica_nodeid;                  /* Node id in cluster mode. */
+
+    unsigned long long full_sync_memory_budget; /* Additional memory the replica can admit for a full sync. */
+    int full_sync_memory_budget_set;            /* Whether the replica supplied a full-sync memory budget. */
+
+    uint64_t associated_rdb_client_id; /* The client id of this replica's rdb connection */
+    time_t rdb_client_disconnect_time; /* Time of the first freeClient call on this client. Used for delaying free. */
+    listNode *ref_repl_buf_node;       /* Referenced node of replication buffer blocks,
+                                         see the definition of replBufBlock. */
+    size_t ref_block_pos;              /* Access position of referenced buffer block,
+                                         i.e. the next offset to send. */
+    sds replica_nodeid;                /* Node id in cluster mode. */
 } ClientReplicationData;
 
 typedef struct ClientModuleData {
@@ -1910,6 +1916,7 @@ struct valkeyServer {
     long long stat_total_forks;                    /* Total count of fork. */
     long long stat_rejected_conn;                  /* Clients rejected because of maxclients */
     long long stat_sync_full;                      /* Number of full resyncs with replicas. */
+    long long stat_sync_full_rejected_memory;      /* Full resyncs rejected by replica memory admission. */
     long long stat_sync_partial_ok;                /* Number of accepted PSYNC requests. */
     long long stat_sync_partial_err;               /* Number of unaccepted PSYNC requests. */
     commandlog commandlog[COMMANDLOG_TYPE_NUM];    /* Logs of commands. */
@@ -2138,30 +2145,34 @@ struct valkeyServer {
     int repl_diskless_sync;                     /* Primary send RDB to replicas sockets directly. */
     int repl_diskless_load;                     /* Replica parse RDB directly from the socket.
                                                  * see REPL_DISKLESS_LOAD_* enum */
-    int repl_diskless_sync_delay;               /* Delay to start a diskless repl BGSAVE. */
-    int repl_diskless_sync_max_replicas;        /* Max replicas for diskless repl BGSAVE
-                                                 * delay (start sooner if they all connect). */
-    int dual_channel_replication;               /* Config used to determine if the replica should
-                                                 * use dual channel replication for full syncs. */
-    _Atomic(int) replica_bio_disk_save_state;   /* Flag set by the bio thread to indicate that the
-                                                 * RDB save to disk has completed, or failed */
-    _Atomic(bool) replica_bio_abort_save;       /* Flag set by main thread, used to signal to replica's
-                                                 * disk-saving bio thread to abort the save */
-    long long bio_stat_net_repl_input_bytes;    /* Used to calculate stat_net_repl_input_bytes on the
-                                                 * replica's bio thread without touching main thread vars */
-    off_t bio_repl_transfer_size;               /* Used to calculate bio_repl_transfer_size on the
-                                                 * replica's bio thread without touching main thread vars */
-    off_t bio_repl_transfer_read;               /* Used to calculate bio_repl_transfer_read on the
-                                                 * replica's bio thread without touching main thread vars */
-    int wait_before_rdb_client_free;            /* Grace period in seconds for replica main channel
-                                                 * to establish psync. */
-    int debug_pause_after_fork;                 /* Debug param that pauses the main process
-                                                 * after a replication fork() (for bgsave). */
-    int debug_pause_before_psync;               /* Replica pauses (SIGSTOP) right before
-                                                 * sending PSYNC to its primary. */
-    size_t repl_buffer_mem;                     /* The memory of replication buffer. */
-    list *repl_buffer_blocks;                   /* Replication buffers blocks list
-                                                 * (serving replica clients and repl backlog) */
+
+    /* Full-sync admission threshold as percent of maxmemory. */
+    int repl_diskless_load_swapdb_max_memory_percent;
+
+    int repl_diskless_sync_delay;             /* Delay to start a diskless repl BGSAVE. */
+    int repl_diskless_sync_max_replicas;      /* Max replicas for diskless repl BGSAVE
+                                               * delay (start sooner if they all connect). */
+    int dual_channel_replication;             /* Config used to determine if the replica should
+                                               * use dual channel replication for full syncs. */
+    _Atomic(int) replica_bio_disk_save_state; /* Flag set by the bio thread to indicate that the
+                                               * RDB save to disk has completed, or failed */
+    _Atomic(bool) replica_bio_abort_save;     /* Flag set by main thread, used to signal to replica's
+                                               * disk-saving bio thread to abort the save */
+    long long bio_stat_net_repl_input_bytes;  /* Used to calculate stat_net_repl_input_bytes on the
+                                               * replica's bio thread without touching main thread vars */
+    off_t bio_repl_transfer_size;             /* Used to calculate bio_repl_transfer_size on the
+                                               * replica's bio thread without touching main thread vars */
+    off_t bio_repl_transfer_read;             /* Used to calculate bio_repl_transfer_read on the
+                                               * replica's bio thread without touching main thread vars */
+    int wait_before_rdb_client_free;          /* Grace period in seconds for replica main channel
+                                               * to establish psync. */
+    int debug_pause_after_fork;               /* Debug param that pauses the main process
+                                               * after a replication fork() (for bgsave). */
+    int debug_pause_before_psync;             /* Replica pauses (SIGSTOP) right before
+                                               * sending PSYNC to its primary. */
+    size_t repl_buffer_mem;                   /* The memory of replication buffer. */
+    list *repl_buffer_blocks;                 /* Replication buffers blocks list
+                                               * (serving replica clients and repl backlog) */
     /* Replication (replica) */
     char *primary_user;     /* AUTH with this user and primary_auth with primary */
     sds primary_auth;       /* AUTH with this password with primary */
@@ -2177,10 +2188,16 @@ struct valkeyServer {
         long long read_reploff;
         int dbid;
     } repl_provisional_primary;
-    client *cached_primary;               /* Cached primary to be reused for PSYNC. */
-    rio *loading_rio;                     /* Pointer to the rio object currently used for loading data. */
-    int repl_syncio_timeout;              /* Timeout for synchronous I/O calls */
-    int repl_state;                       /* Replication status if the instance is a replica */
+    client *cached_primary;  /* Cached primary to be reused for PSYNC. */
+    rio *loading_rio;        /* Pointer to the rio object currently used for loading data. */
+    int repl_syncio_timeout; /* Timeout for synchronous I/O calls */
+    int repl_state;          /* Replication status if the instance is a replica */
+
+    int repl_full_sync_memory_budget_sent;           /* Whether this handshake sent a full-sync memory budget. */
+    unsigned long long repl_full_sync_memory_budget; /* Budget sent in the current handshake. */
+    unsigned long long repl_full_sync_memory_used;   /* Replica memory used when budget was calculated. */
+    unsigned long long repl_full_sync_memory_limit;  /* Admission limit when budget was calculated. */
+
     int repl_rdb_channel_state;           /* State of the replica's rdb channel during dual-channel-replication */
     off_t repl_transfer_size;             /* Size of RDB to read from primary during sync. */
     off_t repl_transfer_read;             /* Amount of RDB read from primary during sync. */
