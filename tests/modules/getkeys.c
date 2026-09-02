@@ -156,6 +156,33 @@ int getkeys_introspect(ValkeyModuleCtx *ctx, ValkeyModuleString **argv, int argc
     return VALKEYMODULE_OK;
 }
 
+/* Return core-derived key positions, flags, and common hash slot for an argv. */
+int getkeys_routing_info(ValkeyModuleCtx *ctx, ValkeyModuleString **argv, int argc)
+{
+    if (argc < 2) {
+        ValkeyModule_WrongArity(ctx);
+        return VALKEYMODULE_OK;
+    }
+
+    ValkeyModuleCommandRoutingInfo info = {0};
+    if (ValkeyModule_GetCommandRoutingInfo(ctx, &argv[1], argc - 1, &info) == VALKEYMODULE_ERR) {
+        ValkeyModule_ReplyWithError(ctx, "ERR routing information unavailable");
+        return VALKEYMODULE_OK;
+    }
+
+    ValkeyModule_ReplyWithArray(ctx, 3);
+    ValkeyModule_ReplyWithLongLong(ctx, info.slot);
+    ValkeyModule_ReplyWithBool(ctx, info.cross_slot);
+    ValkeyModule_ReplyWithArray(ctx, info.num_keys);
+    for (int i = 0; i < info.num_keys; i++) {
+        ValkeyModule_ReplyWithArray(ctx, 2);
+        ValkeyModule_ReplyWithLongLong(ctx, info.key_indexes[i]);
+        ValkeyModule_ReplyWithLongLong(ctx, info.key_flags[i]);
+    }
+    ValkeyModule_FreeCommandRoutingInfo(&info);
+    return VALKEYMODULE_OK;
+}
+
 int ValkeyModule_OnLoad(ValkeyModuleCtx *ctx, ValkeyModuleString **argv, int argc) {
     UNUSED(argv);
     UNUSED(argc);
@@ -172,6 +199,9 @@ int ValkeyModule_OnLoad(ValkeyModuleCtx *ctx, ValkeyModuleString **argv, int arg
         return VALKEYMODULE_ERR;
 
     if (ValkeyModule_CreateCommand(ctx,"getkeys.introspect", getkeys_introspect,"",0,0,0) == VALKEYMODULE_ERR)
+        return VALKEYMODULE_ERR;
+
+    if (ValkeyModule_CreateCommand(ctx,"getkeys.routing_info", getkeys_routing_info,"",0,0,0) == VALKEYMODULE_ERR)
         return VALKEYMODULE_ERR;
 
     return VALKEYMODULE_OK;

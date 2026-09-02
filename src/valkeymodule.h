@@ -1415,6 +1415,18 @@ typedef struct ValkeyModuleReplyHandlersV1 {
 /* ------------------------- End of common defines ------------------------ */
 
 /* ----------- The rest of the defines are only for modules ----------------- */
+/* Native key and slot metadata for a command argv, owned by the caller until freed. */
+typedef struct {
+    uint64_t version;
+    int *key_indexes;
+    int *key_flags;
+    int num_keys;
+    int slot;
+    int cross_slot;
+} ValkeyModuleCommandRoutingInfoV1;
+
+#define ValkeyModuleCommandRoutingInfo ValkeyModuleCommandRoutingInfoV1
+
 #if !defined VALKEYMODULE_CORE || defined VALKEYMODULE_CORE_MODULE
 /* Things defined for modules and core-modules. */
 
@@ -2216,6 +2228,11 @@ VALKEYMODULE_API int *(*ValkeyModule_GetCommandKeysWithFlags)(ValkeyModuleCtx *c
                                                               int argc,
                                                               int *num_keys,
                                                               int **out_flags)VALKEYMODULE_ATTR;
+VALKEYMODULE_API int (*ValkeyModule_GetCommandRoutingInfo)(ValkeyModuleCtx *ctx,
+                                                           ValkeyModuleString **argv,
+                                                           int argc,
+                                                           ValkeyModuleCommandRoutingInfo *info)VALKEYMODULE_ATTR;
+VALKEYMODULE_API void (*ValkeyModule_FreeCommandRoutingInfo)(ValkeyModuleCommandRoutingInfo *info)VALKEYMODULE_ATTR;
 VALKEYMODULE_API const char *(*ValkeyModule_GetCurrentCommandName)(ValkeyModuleCtx *ctx)VALKEYMODULE_ATTR;
 VALKEYMODULE_API int (*ValkeyModule_RegisterDefragFunc)(ValkeyModuleCtx *ctx,
                                                         ValkeyModuleDefragFunc func) VALKEYMODULE_ATTR;
@@ -2670,6 +2687,8 @@ static int ValkeyModule_Init(ValkeyModuleCtx *ctx, const char *name, int ver, in
     VALKEYMODULE_GET_API(GetClientCertificate);
     VALKEYMODULE_GET_API(GetCommandKeys);
     VALKEYMODULE_GET_API(GetCommandKeysWithFlags);
+    VALKEYMODULE_GET_API(GetCommandRoutingInfo);
+    VALKEYMODULE_GET_API(FreeCommandRoutingInfo);
     VALKEYMODULE_GET_API(GetCurrentCommandName);
     VALKEYMODULE_GET_API(RegisterDefragFunc);
     VALKEYMODULE_GET_API(DefragAlloc);
