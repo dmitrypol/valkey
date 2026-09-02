@@ -14963,6 +14963,48 @@ int *VM_GetCommandKeys(ValkeyModuleCtx *ctx, ValkeyModuleString **argv, int argc
     return VM_GetCommandKeysWithFlags(ctx, argv, argc, num_keys, NULL);
 }
 
+/* Return native key positions, module key flags, and the common cluster hash slot.
+ * This is informational only: it neither runs the command nor invokes filters. */
+int VM_GetCommandRoutingInfo(ValkeyModuleCtx *ctx,
+                             ValkeyModuleString **argv,
+                             int argc,
+                             ValkeyModuleCommandRoutingInfo *info) {
+    if (!info) {
+        errno = EINVAL;
+        return VALKEYMODULE_ERR;
+    }
+
+    memset(info, 0, sizeof(*info));
+    info->version = 1;
+    info->slot = -1;
+    info->key_indexes = VM_GetCommandKeysWithFlags(ctx, argv, argc, &info->num_keys, &info->key_flags);
+    if (!info->key_indexes) {
+        return errno ? VALKEYMODULE_ERR : VALKEYMODULE_OK;
+    }
+
+    for (int i = 0; i < info->num_keys; i++) {
+        sds key = objectGetVal(argv[info->key_indexes[i]]);
+        int slot = keyHashSlot(key, sdslen(key));
+        if (i == 0) {
+            info->slot = slot;
+        } else if (info->slot != slot) {
+            info->slot = -1;
+            info->cross_slot = 1;
+            break;
+        }
+    }
+    return VALKEYMODULE_OK;
+}
+
+/* Release result storage returned by VM_GetCommandRoutingInfo(). */
+void VM_FreeCommandRoutingInfo(ValkeyModuleCommandRoutingInfo *info) {
+    if (!info) return;
+    zfree(info->key_indexes);
+    zfree(info->key_flags);
+    memset(info, 0, sizeof(*info));
+    info->slot = -1;
+}
+
 /* Return the name of the command currently running */
 const char *VM_GetCurrentCommandName(ValkeyModuleCtx *ctx) {
     if (!ctx || !ctx->client || !ctx->client->cmd) return NULL;
@@ -15560,6 +15602,8 @@ void moduleRegisterCoreAPI(void) {
     REGISTER_API(RedactClientCommandArgument);
     REGISTER_API(GetCommandKeys);
     REGISTER_API(GetCommandKeysWithFlags);
+    REGISTER_API(GetCommandRoutingInfo);
+    REGISTER_API(FreeCommandRoutingInfo);
     REGISTER_API(GetCurrentCommandName);
     REGISTER_API(GetTypeMethodVersion);
     REGISTER_API(RegisterDefragFunc);

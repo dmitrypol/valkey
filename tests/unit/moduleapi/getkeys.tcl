@@ -58,6 +58,20 @@ start_server {tags {"modules"}} {
         set _ $e
     } {*EINVAL*}
 
+    test {RM_GetCommandRoutingInfo reports key positions, flags, and a common slot} {
+        set reply [r getkeys.routing_info mget \{same\}one \{same\}two]
+        assert_equal 13447 [lindex $reply 0]
+        assert_equal 0 [lindex $reply 1]
+        assert_equal {{1 0} {2 0}} [lindex $reply 2]
+    }
+
+    test {RM_GetCommandRoutingInfo reports cross-slot commands} {
+        set reply [r getkeys.routing_info mget one two]
+        assert_equal -1 [lindex $reply 0]
+        assert_equal 1 [lindex $reply 1]
+        assert_equal {{1 0} {2 0}} [lindex $reply 2]
+    }
+
     # user that can only read from "read" keys, write to "write" keys, and read+write to "RW" keys
     r ACL setuser testuser +@all %R~read* %W~write* %RW~rw*
 
