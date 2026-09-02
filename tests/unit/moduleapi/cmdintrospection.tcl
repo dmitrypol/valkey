@@ -44,6 +44,17 @@ start_server {tags {"modules"}} {
         assert_equal $redis_reply $module_reply
     }
 
+    test "Module command registration with options" {
+        set info [lindex [r command info cmdintrospection.options] 0]
+        assert_equal {-1} [lindex $info 1]
+        assert_equal {denyoom module write} [lsort [lindex $info 2]]
+        assert_equal {@write} [lindex $info 6]
+        assert_equal {key} [r command getkeys cmdintrospection.options key]
+
+        set docs [dict create {*}[lindex [r command docs cmdintrospection.options] 1]]
+        assert_equal {Tests command registration with options.} [dict get $docs summary]
+    }
+
     test "Unload the module - cmdintrospection" {
         assert_equal {OK} [r module unload cmdintrospection]
     }

@@ -506,6 +506,34 @@ typedef struct {
     ValkeyModuleCommandArg *args;
 } ValkeyModuleCommandInfo;
 
+/* Describes the command-options layout supplied by the module. Structure size
+ * and key-spec stride let the server interpret compatible header versions. */
+typedef struct {
+    int version;
+    size_t sizeof_options;
+    size_t sizeof_keyspec;
+} ValkeyModuleCommandOptionsVersion;
+
+/* Options for ValkeyModule_CreateCommandWithOptions. All strings and key specs
+ * are borrowed for the duration of the call; Valkey copies configured metadata.
+ * The version descriptor records structure sizes so compatible prefixes and
+ * the module's key-spec stride can be interpreted across header versions. */
+typedef struct {
+    const ValkeyModuleCommandOptionsVersion *version;
+    const char *flags;
+    ValkeyModuleCommandKeySpec *key_specs;
+    const char *acl_categories;
+    const char *summary;
+} ValkeyModuleCommandOptions;
+
+static const ValkeyModuleCommandOptionsVersion ValkeyModule_CurrentCommandOptionsVersion = {
+    .version = 1,
+    .sizeof_options = sizeof(ValkeyModuleCommandOptions),
+    .sizeof_keyspec = sizeof(ValkeyModuleCommandKeySpec)};
+
+/* Use this value to initialize ValkeyModuleCommandOptions.version. */
+#define VALKEYMODULE_COMMAND_OPTIONS_VERSION (&ValkeyModule_CurrentCommandOptionsVersion)
+
 /* Eventloop definitions. */
 #define VALKEYMODULE_EVENTLOOP_READABLE 1
 #define VALKEYMODULE_EVENTLOOP_WRITABLE 2
@@ -1571,6 +1599,10 @@ VALKEYMODULE_API int (*ValkeyModule_CreateCommand)(ValkeyModuleCtx *ctx,
                                                    int firstkey,
                                                    int lastkey,
                                                    int keystep) VALKEYMODULE_ATTR;
+VALKEYMODULE_API int (*ValkeyModule_CreateCommandWithOptions)(ValkeyModuleCtx *ctx,
+                                                              const char *name,
+                                                              ValkeyModuleCmdFunc cmdfunc,
+                                                              const ValkeyModuleCommandOptions *options) VALKEYMODULE_ATTR;
 VALKEYMODULE_API ValkeyModuleCommand *(*ValkeyModule_GetCommand)(ValkeyModuleCtx *ctx,
                                                                  const char *name)VALKEYMODULE_ATTR;
 VALKEYMODULE_API int (*ValkeyModule_CreateSubcommand)(ValkeyModuleCommand *parent,
@@ -2334,6 +2366,7 @@ static int ValkeyModule_Init(ValkeyModuleCtx *ctx, const char *name, int ver, in
     VALKEYMODULE_GET_API(TryRealloc);
     VALKEYMODULE_GET_API(Strdup);
     VALKEYMODULE_GET_API(CreateCommand);
+    VALKEYMODULE_GET_API(CreateCommandWithOptions);
     VALKEYMODULE_GET_API(GetCommand);
     VALKEYMODULE_GET_API(CreateSubcommand);
     VALKEYMODULE_GET_API(SetCommandInfo);

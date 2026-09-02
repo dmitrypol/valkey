@@ -9,6 +9,13 @@ int cmd_xadd(ValkeyModuleCtx *ctx, ValkeyModuleString **argv, int argc) {
     return VALKEYMODULE_OK;
 }
 
+int cmd_options(ValkeyModuleCtx *ctx, ValkeyModuleString **argv, int argc) {
+    UNUSED(argv);
+    UNUSED(argc);
+    ValkeyModule_ReplyWithSimpleString(ctx, "OK");
+    return VALKEYMODULE_OK;
+}
+
 int ValkeyModule_OnLoad(ValkeyModuleCtx *ctx, ValkeyModuleString **argv, int argc) {
     VALKEYMODULE_NOT_USED(argv);
     VALKEYMODULE_NOT_USED(argc);
@@ -153,6 +160,36 @@ int ValkeyModule_OnLoad(ValkeyModuleCtx *ctx, ValkeyModuleString **argv, int arg
     };
     if (ValkeyModule_SetCommandInfo(xadd, &info) == VALKEYMODULE_ERR)
         return VALKEYMODULE_ERR;
+
+    ValkeyModuleCommandOptions options = {
+        .version = VALKEYMODULE_COMMAND_OPTIONS_VERSION,
+        .flags = "write deny-oom",
+        .key_specs = (ValkeyModuleCommandKeySpec[]){
+            {
+                .flags = VALKEYMODULE_CMD_KEY_RW | VALKEYMODULE_CMD_KEY_UPDATE,
+                .begin_search_type = VALKEYMODULE_KSPEC_BS_INDEX,
+                .bs.index.pos = 1,
+            },
+            {0}
+        },
+        .acl_categories = "write",
+        .summary = "Tests command registration with options.",
+    };
+    if (ValkeyModule_CreateCommandWithOptions(ctx, "cmdintrospection.options", cmd_options, &options) ==
+        VALKEYMODULE_ERR)
+        return VALKEYMODULE_ERR;
+
+    ValkeyModuleCommandOptions invalid_options = options;
+    invalid_options.acl_categories = "not-a-category";
+    ValkeyModule_Assert(ValkeyModule_CreateCommandWithOptions(ctx, "cmdintrospection.invalid", cmd_options,
+                                                              &invalid_options) == VALKEYMODULE_ERR);
+    ValkeyModule_Assert(ValkeyModule_GetCommand(ctx, "cmdintrospection.invalid") == NULL);
+
+    invalid_options = options;
+    invalid_options.version = NULL;
+    ValkeyModule_Assert(ValkeyModule_CreateCommandWithOptions(ctx, "cmdintrospection.invalid-version", cmd_options,
+                                                              &invalid_options) == VALKEYMODULE_ERR);
+    ValkeyModule_Assert(ValkeyModule_GetCommand(ctx, "cmdintrospection.invalid-version") == NULL);
 
     return VALKEYMODULE_OK;
 }

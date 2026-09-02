@@ -2129,6 +2129,50 @@ int VM_SetCommandInfo(ValkeyModuleCommand *command, const ValkeyModuleCommandInf
     return VALKEYMODULE_OK;
 }
 
+/* Register a command and its commonly used metadata in one load-time call.
+ * `options` must use VALKEYMODULE_COMMAND_OPTIONS_VERSION; flags and ACL
+ * categories use the same strings as the existing APIs, and key_specs is an
+ * optional zero-terminated array. Inputs are validated before registration,
+ * then copied through the existing command registration, command info, and ACL
+ * category APIs. Invalid options return VALKEYMODULE_ERR with errno set to
+ * EINVAL. */
+int VM_CreateCommandWithOptions(ValkeyModuleCtx *ctx,
+                                const char *name,
+                                ValkeyModuleCmdFunc cmdfunc,
+                                const ValkeyModuleCommandOptions *options) {
+    if (!options || !options->version || options->version->version < 1 ||
+        options->version->sizeof_options < sizeof(*options)) {
+        errno = EINVAL;
+        return VALKEYMODULE_ERR;
+    }
+
+    ValkeyModuleCommandInfoVersion info_version = *VALKEYMODULE_COMMAND_INFO_VERSION;
+    info_version.sizeof_keyspec = options->version->sizeof_keyspec;
+    ValkeyModuleCommandInfo info = {
+        .version = &info_version,
+        .summary = options->summary,
+        .key_specs = options->key_specs,
+    };
+    if (!moduleValidateCommandInfo(&info) ||
+        (options->flags && commandFlagsFromString((char *)options->flags) == -1) ||
+        (options->acl_categories && categoryFlagsFromString((char *)options->acl_categories) == -1)) {
+        errno = EINVAL;
+        return VALKEYMODULE_ERR;
+    }
+
+    if (VM_CreateCommand(ctx, name, cmdfunc, options->flags, 0, 0, 0) == VALKEYMODULE_ERR)
+        return VALKEYMODULE_ERR;
+
+    ValkeyModuleCommand *command = VM_GetCommand(ctx, name);
+    serverAssert(command != NULL);
+    if ((options->summary || options->key_specs) && VM_SetCommandInfo(command, &info) == VALKEYMODULE_ERR)
+        return VALKEYMODULE_ERR;
+    if (options->acl_categories &&
+        VM_SetCommandACLCategories(command, options->acl_categories) == VALKEYMODULE_ERR)
+        return VALKEYMODULE_ERR;
+    return VALKEYMODULE_OK;
+}
+
 /* Returns 1 if v is a power of two, 0 otherwise. */
 static inline int isPowerOfTwo(uint64_t v) {
     return v && !(v & (v - 1));
@@ -15226,6 +15270,7 @@ void moduleRegisterCoreAPI(void) {
     REGISTER_API(Free);
     REGISTER_API(Strdup);
     REGISTER_API(CreateCommand);
+    REGISTER_API(CreateCommandWithOptions);
     REGISTER_API(GetCommand);
     REGISTER_API(CreateSubcommand);
     REGISTER_API(SetCommandInfo);
