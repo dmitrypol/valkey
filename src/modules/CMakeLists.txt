@@ -1,5 +1,6 @@
 # Build modules
 list(APPEND MODULES_LIST "helloacl")
+list(APPEND MODULES_LIST "hellooptions")
 list(APPEND MODULES_LIST "helloblock")
 list(APPEND MODULES_LIST "hellocluster")
 list(APPEND MODULES_LIST "hellodict")

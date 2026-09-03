@@ -70,6 +70,7 @@ TEST_MODULES = \
     crash.so \
     cluster.so \
     hellovalkey.so \
+    hellooptions_test.so \
     helloscripting.so \
     unsupported_features.so \
     deferred_reply.so
@@ -98,6 +99,9 @@ ifeq ($(uname_S),Linux)
 else
 	$(LD) -o $@ hellovalkey.xo $(SHOBJ_LDFLAGS) $(LDFLAGS) $(LIBS)
 endif
+
+hellooptions_test.xo: ../../src/modules/hellooptions.c ../../src/valkeymodule.h
+	$(CC) -I../../src $(CFLAGS) $(SHOBJ_CFLAGS) -fPIC -c $< -o $@
 
 .PHONY: clean
 
