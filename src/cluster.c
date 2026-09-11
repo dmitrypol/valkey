@@ -857,6 +857,10 @@ void clusterCommandHelp(client *c) {
         "NODES",
         "    Return cluster configuration seen by node. Output format:",
         "    <id> <ip:port@bus-port[,hostname]> <flags> <primary> <pings> <pongs> <epoch> <link> <slot> ...",
+        "REPLICAOF <seed-host> <seed-port>",
+        "    Reserved for making the current node an upstream-facing bridge for its local shard (not implemented).",
+        "REPLICAOF NO ONE",
+        "    Reserved for detaching the current bridge node from its upstream (not implemented).",
         "REPLICAS <node-id>",
         "    Return <node-id> replicas.",
         "SLOTS",
@@ -874,6 +878,22 @@ void clusterCommandHelp(client *c) {
 void clusterKeySlotCommand(client *c) {
     sds key = objectGetVal(c->argv[2]);
     addReplyLongLong(c, keyHashSlot(key, sdslen(key)));
+}
+
+static void clusterCommandReplicaOf(client *c) {
+    const char *host = objectGetVal(c->argv[2]);
+    const char *port_arg = objectGetVal(c->argv[3]);
+    long long port;
+
+    if (!strcasecmp(host, "no") && !strcasecmp(port_arg, "one")) {
+        addReplyError(c, "CLUSTER REPLICAOF is not implemented");
+    } else if (sdslen(host) == 0) {
+        addReplyError(c, "Seed host must not be empty");
+    } else if (!string2ll(port_arg, sdslen(port_arg), &port) || port < 1 || port > 65535) {
+        addReplyError(c, "Invalid seed port: expected an integer between 1 and 65535");
+    } else {
+        addReplyError(c, "CLUSTER REPLICAOF is not implemented");
+    }
 }
 
 void clusterCommand(client *c) {
@@ -902,6 +922,9 @@ void clusterCommand(client *c) {
     } else if (!strcasecmp(objectGetVal(c->argv[1]), "shards") && c->argc == 2) {
         /* CLUSTER SHARDS */
         clusterCommandShards(c);
+    } else if (!strcasecmp(objectGetVal(c->argv[1]), "replicaof") && c->argc == 4) {
+        /* CLUSTER REPLICAOF <seed-host> <seed-port> | NO ONE */
+        clusterCommandReplicaOf(c);
     } else if (!strcasecmp(objectGetVal(c->argv[1]), "info") && c->argc == 2) {
         /* CLUSTER INFO */
 

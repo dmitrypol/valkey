@@ -848,6 +848,46 @@ const char *CLUSTER_NODES_Tips[] = {
 #define CLUSTER_NODES_Keyspecs NULL
 #endif
 
+/********** CLUSTER REPLICAOF ********************/
+
+#ifndef SKIP_CMD_HISTORY_TABLE
+/* CLUSTER REPLICAOF history */
+#define CLUSTER_REPLICAOF_History NULL
+#endif
+
+#ifndef SKIP_CMD_TIPS_TABLE
+/* CLUSTER REPLICAOF tips */
+#define CLUSTER_REPLICAOF_Tips NULL
+#endif
+
+#ifndef SKIP_CMD_KEY_SPECS_TABLE
+/* CLUSTER REPLICAOF key specs */
+#define CLUSTER_REPLICAOF_Keyspecs NULL
+#endif
+
+/* CLUSTER REPLICAOF args host_port argument table */
+struct COMMAND_ARG CLUSTER_REPLICAOF_args_host_port_Subargs[] = {
+{MAKE_ARG("host",ARG_TYPE_STRING,-1,NULL,NULL,NULL,CMD_ARG_NONE,0,NULL),.display_text="seed-host"},
+{MAKE_ARG("port",ARG_TYPE_INTEGER,-1,NULL,NULL,NULL,CMD_ARG_NONE,0,NULL),.display_text="seed-port"},
+};
+
+/* CLUSTER REPLICAOF args no_one argument table */
+struct COMMAND_ARG CLUSTER_REPLICAOF_args_no_one_Subargs[] = {
+{MAKE_ARG("no",ARG_TYPE_PURE_TOKEN,-1,"NO",NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("one",ARG_TYPE_PURE_TOKEN,-1,"ONE",NULL,NULL,CMD_ARG_NONE,0,NULL)},
+};
+
+/* CLUSTER REPLICAOF args argument table */
+struct COMMAND_ARG CLUSTER_REPLICAOF_args_Subargs[] = {
+{MAKE_ARG("host-port",ARG_TYPE_BLOCK,-1,NULL,NULL,NULL,CMD_ARG_NONE,2,NULL),.subargs=CLUSTER_REPLICAOF_args_host_port_Subargs},
+{MAKE_ARG("no-one",ARG_TYPE_BLOCK,-1,NULL,NULL,NULL,CMD_ARG_NONE,2,NULL),.subargs=CLUSTER_REPLICAOF_args_no_one_Subargs},
+};
+
+/* CLUSTER REPLICAOF argument table */
+struct COMMAND_ARG CLUSTER_REPLICAOF_Args[] = {
+{MAKE_ARG("args",ARG_TYPE_ONEOF,-1,NULL,NULL,NULL,CMD_ARG_NONE,2,NULL),.subargs=CLUSTER_REPLICAOF_args_Subargs},
+};
+
 /********** CLUSTER REPLICAS ********************/
 
 #ifndef SKIP_CMD_HISTORY_TABLE
@@ -1169,6 +1209,7 @@ struct COMMAND_STRUCT CLUSTER_Subcommands[] = {
 {MAKE_CMD("myid","Returns the ID of a node.","O(1)","3.0.0",CMD_DOC_NONE,NULL,NULL,"cluster",COMMAND_GROUP_CLUSTER,CLUSTER_MYID_History,0,CLUSTER_MYID_Tips,0,clusterCommand,2,CMD_LOADING|CMD_STALE,ACL_CATEGORY_SLOW,NULL,CLUSTER_MYID_Keyspecs,0,NULL,0)},
 {MAKE_CMD("myshardid","Returns the shard ID of a node.","O(1)","7.2.0",CMD_DOC_NONE,NULL,NULL,"cluster",COMMAND_GROUP_CLUSTER,CLUSTER_MYSHARDID_History,0,CLUSTER_MYSHARDID_Tips,1,clusterCommand,2,CMD_LOADING|CMD_STALE,ACL_CATEGORY_SLOW,NULL,CLUSTER_MYSHARDID_Keyspecs,0,NULL,0)},
 {MAKE_CMD("nodes","Returns the cluster configuration for a node.","O(N) where N is the total number of Cluster nodes","3.0.0",CMD_DOC_NONE,NULL,NULL,"cluster",COMMAND_GROUP_CLUSTER,CLUSTER_NODES_History,0,CLUSTER_NODES_Tips,1,clusterCommand,2,CMD_LOADING|CMD_STALE,ACL_CATEGORY_SLOW,NULL,CLUSTER_NODES_Keyspecs,0,NULL,0)},
+{MAKE_CMD("replicaof","Configures the current node as an upstream-facing bridge for its local shard, or detaches it from its upstream.","O(1)","9.2.0",CMD_DOC_NONE,NULL,NULL,"cluster",COMMAND_GROUP_CLUSTER,CLUSTER_REPLICAOF_History,0,CLUSTER_REPLICAOF_Tips,0,clusterCommand,4,CMD_NO_ASYNC_LOADING|CMD_ADMIN|CMD_STALE,ACL_CATEGORY_ADMIN|ACL_CATEGORY_DANGEROUS|ACL_CATEGORY_SLOW,NULL,CLUSTER_REPLICAOF_Keyspecs,0,NULL,1),.args=CLUSTER_REPLICAOF_Args},
 {MAKE_CMD("replicas","Lists the replica nodes of a primary node.","O(N) where N is the number of replicas.","5.0.0",CMD_DOC_NONE,NULL,NULL,"cluster",COMMAND_GROUP_CLUSTER,CLUSTER_REPLICAS_History,0,CLUSTER_REPLICAS_Tips,1,clusterCommand,3,CMD_ADMIN|CMD_STALE,ACL_CATEGORY_ADMIN|ACL_CATEGORY_DANGEROUS|ACL_CATEGORY_SLOW,NULL,CLUSTER_REPLICAS_Keyspecs,0,NULL,1),.args=CLUSTER_REPLICAS_Args},
 {MAKE_CMD("replicate","Configures a node as replica of a primary node or detaches a replica from its primary.","O(1)","3.0.0",CMD_DOC_NONE,NULL,NULL,"cluster",COMMAND_GROUP_CLUSTER,CLUSTER_REPLICATE_History,1,CLUSTER_REPLICATE_Tips,0,clusterCommand,-3,CMD_NO_ASYNC_LOADING|CMD_ADMIN|CMD_STALE,ACL_CATEGORY_ADMIN|ACL_CATEGORY_DANGEROUS|ACL_CATEGORY_SLOW,NULL,CLUSTER_REPLICATE_Keyspecs,0,NULL,1),.args=CLUSTER_REPLICATE_Args},
 {MAKE_CMD("reset","Resets a node.","O(N) where N is the number of known nodes. The command may execute a FLUSHALL as a side effect.","3.0.0",CMD_DOC_NONE,NULL,NULL,"cluster",COMMAND_GROUP_CLUSTER,CLUSTER_RESET_History,0,CLUSTER_RESET_Tips,0,clusterCommand,-2,CMD_ADMIN|CMD_STALE|CMD_NOSCRIPT,ACL_CATEGORY_ADMIN|ACL_CATEGORY_DANGEROUS|ACL_CATEGORY_SLOW,NULL,CLUSTER_RESET_Keyspecs,0,NULL,1),.args=CLUSTER_RESET_Args},
