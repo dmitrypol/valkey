@@ -1,0 +1,14 @@
+{
+    "CCR-SLOTS": {
+        "summary": "Returns cross-cluster replication slot mappings.",
+        "complexity": "O(N) where N is the number of configured cross-cluster replication slot ranges",
+        "group": "cluster",
+        "since": "9.2.0",
+        "arity": 2,
+        "container": "CLUSTER",
+        "function": "clusterCommand",
+        "command_flags": ["LOADING", "STALE"],
+        "command_tips": ["NONDETERMINISTIC_OUTPUT"],
+        "acl_categories": ["SLOW"]
+    }
+}
