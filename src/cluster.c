@@ -863,6 +863,8 @@ void clusterCommandHelp(client *c) {
         "    Reserved for making the current node an upstream-facing bridge for its local shard (not implemented).",
         "CCR-REPLICATE NO ONE",
         "    Reserved for detaching the current bridge node from its upstream (not implemented).",
+        "CCR-INFO",
+        "    Reserved for returning cross-cluster replication information (not implemented).",
         "SET-WRITE-MODE <READONLY | READWRITE>",
         "    Reserved for changing this node's client data-write mode (not implemented).",
         "REPLICAS <node-id>",
@@ -898,6 +900,10 @@ static void clusterCommandCcrReplicate(client *c) {
     } else {
         addReplyError(c, "CLUSTER CCR-REPLICATE is not implemented");
     }
+}
+
+static void clusterCommandCcrInfo(client *c) {
+    addReplyErrorFormat(c, "CLUSTER %s is not implemented", (char *)objectGetVal(c->argv[1]));
 }
 
 static void clusterCommandSetWriteMode(client *c) {
@@ -940,6 +946,9 @@ void clusterCommand(client *c) {
     } else if (!strcasecmp(objectGetVal(c->argv[1]), "ccr-replicate") && c->argc == 4) {
         /* CLUSTER CCR-REPLICATE <seed-host> <seed-port> | NO ONE */
         clusterCommandCcrReplicate(c);
+    } else if (!strcasecmp(objectGetVal(c->argv[1]), "ccr-info") && c->argc == 2) {
+        /* CLUSTER CCR-INFO */
+        clusterCommandCcrInfo(c);
     } else if (!strcasecmp(objectGetVal(c->argv[1]), "set-write-mode") && c->argc == 3) {
         /* CLUSTER SET-WRITE-MODE <READONLY | READWRITE> */
         clusterCommandSetWriteMode(c);
