@@ -863,6 +863,8 @@ void clusterCommandHelp(client *c) {
         "    Reserved for making the current node an upstream-facing bridge for its local shard (not implemented).",
         "CCR-REPLICATE NO ONE",
         "    Reserved for detaching the current bridge node from its upstream (not implemented).",
+        "SET-WRITE-MODE <READONLY | READWRITE>",
+        "    Reserved for changing this node's client data-write mode (not implemented).",
         "REPLICAS <node-id>",
         "    Return <node-id> replicas.",
         "SLOTS",
@@ -898,6 +900,17 @@ static void clusterCommandCcrReplicate(client *c) {
     }
 }
 
+static void clusterCommandSetWriteMode(client *c) {
+    const char *mode = objectGetVal(c->argv[2]);
+
+    if (strcasecmp(mode, "readonly") && strcasecmp(mode, "readwrite")) {
+        addReplyError(c, "Invalid write mode: expected READONLY or READWRITE");
+        return;
+    }
+
+    addReplyError(c, "CLUSTER SET-WRITE-MODE is not implemented");
+}
+
 void clusterCommand(client *c) {
     if (server.cluster_enabled == 0) {
         addReplyError(c, "This instance has cluster support disabled");
@@ -927,6 +940,9 @@ void clusterCommand(client *c) {
     } else if (!strcasecmp(objectGetVal(c->argv[1]), "ccr-replicate") && c->argc == 4) {
         /* CLUSTER CCR-REPLICATE <seed-host> <seed-port> | NO ONE */
         clusterCommandCcrReplicate(c);
+    } else if (!strcasecmp(objectGetVal(c->argv[1]), "set-write-mode") && c->argc == 3) {
+        /* CLUSTER SET-WRITE-MODE <READONLY | READWRITE> */
+        clusterCommandSetWriteMode(c);
     } else if (!strcasecmp(objectGetVal(c->argv[1]), "info") && c->argc == 2) {
         /* CLUSTER INFO */
 
