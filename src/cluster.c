@@ -941,7 +941,7 @@ void clusterCommand(client *c) {
         clusterCommandMyShardId(c);
     } else if (!strcasecmp(objectGetVal(c->argv[1]), "myshard") && c->argc == 2) {
         /* CLUSTER MYSHARD */
-        addReplyError(c, "CLUSTER MYSHARD is not implemented");
+        clusterCommandMyShard(c);
     } else if (!strcasecmp(objectGetVal(c->argv[1]), "slots") && c->argc == 2) {
         /* CLUSTER SLOTS */
         clusterCommandSlots(c);
