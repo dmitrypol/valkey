@@ -1,0 +1,18 @@
+{
+    "MYSHARD": {
+        "summary": "Returns the slot ranges and nodes in the current shard.",
+        "complexity": "O(1)",
+        "group": "cluster",
+        "since": "9.2.0",
+        "arity": 2,
+        "container": "CLUSTER",
+        "function": "clusterCommand",
+        "command_flags": [
+            "LOADING",
+            "STALE"
+        ],
+        "acl_categories": [
+            "SLOW"
+        ]
+    }
+}
