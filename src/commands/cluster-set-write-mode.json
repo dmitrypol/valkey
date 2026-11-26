@@ -1,0 +1,39 @@
+{
+    "SET-WRITE-MODE": {
+        "summary": "Changes the client data-write mode for the current node.",
+        "complexity": "O(1)",
+        "group": "cluster",
+        "since": "9.2.0",
+        "arity": 3,
+        "container": "CLUSTER",
+        "function": "clusterCommand",
+        "command_flags": [
+            "NO_ASYNC_LOADING",
+            "ADMIN",
+            "STALE"
+        ],
+        "arguments": [
+            {
+                "name": "mode",
+                "type": "oneof",
+                "arguments": [
+                    {
+                        "name": "readonly",
+                        "type": "pure-token",
+                        "token": "READONLY"
+                    },
+                    {
+                        "name": "readwrite",
+                        "type": "pure-token",
+                        "token": "READWRITE"
+                    }
+                ]
+            }
+        ],
+        "acl_categories": [
+            "ADMIN",
+            "DANGEROUS",
+            "SLOW"
+        ]
+    }
+}

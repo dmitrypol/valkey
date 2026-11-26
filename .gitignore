@@ -61,3 +61,5 @@ __pycache__
 src/unit/.flags
 valkey-unit-tests
 src/.idea/*
+.codegraph/
+.superpowers/
