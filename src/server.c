@@ -2285,6 +2285,7 @@ void createSharedObjects(void) {
     createSharedObjectsForCompat(1);
     updateSharedObjectsWithCompat();
     shared.primarydownerr = createSharedString("-MASTERDOWN Link with MASTER is down and replica-serve-stale-data is set to 'no'.\r\n");
+    shared.roclustererr = createSharedString("-READONLY The cluster is in read-only mode.\r\n");
     shared.roreplicaerr = createSharedString("-READONLY You can't write against a read only replica.\r\n");
     shared.noautherr = createSharedString("-NOAUTH Authentication required.\r\n");
     shared.oomerr = createSharedString("-OOM command not allowed when used memory > 'maxmemory'.\r\n");
@@ -4919,6 +4920,12 @@ int processCommand(client *c) {
     if (server.current_client == NULL) {
         /* If we evicted ourself then abort processing the command */
         return C_ERR;
+    }
+
+    /* Block client writes in read-only mode while allowing replication and AOF replay. */
+    if (is_write_command && !obey_client && clusterIsReadOnly()) {
+        rejectCommand(c, shared.roclustererr, 1);
+        return C_OK;
     }
 
     /* Handle the maxmemory directive.

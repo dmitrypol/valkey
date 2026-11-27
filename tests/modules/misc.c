@@ -61,6 +61,12 @@ int test_open_key_no_effects(ValkeyModuleCtx *ctx, ValkeyModuleString **argv, in
     return VALKEYMODULE_OK;
 }
 
+static int test_context_readonly(ValkeyModuleCtx *ctx, ValkeyModuleString **argv, int argc) {
+    VALKEYMODULE_NOT_USED(argv);
+    if (argc != 1) return ValkeyModule_WrongArity(ctx);
+    return ValkeyModule_ReplyWithLongLong(ctx, !!(ValkeyModule_GetContextFlags(ctx) & VALKEYMODULE_CTX_FLAGS_READONLY));
+}
+
 int test_call_generic(ValkeyModuleCtx *ctx, ValkeyModuleString **argv, int argc)
 {
     if (argc<2) {
@@ -739,6 +745,8 @@ int ValkeyModule_OnLoad(ValkeyModuleCtx *ctx, ValkeyModuleString **argv, int arg
         return VALKEYMODULE_ERR;
     }
 
+    if (ValkeyModule_CreateCommand(ctx, "test.context_readonly", test_context_readonly, "readonly", 0, 0, 0) == VALKEYMODULE_ERR)
+        return VALKEYMODULE_ERR;
     if (ValkeyModule_CreateCommand(ctx,"test.call_generic", test_call_generic,"",0,0,0) == VALKEYMODULE_ERR)
         return VALKEYMODULE_ERR;
     if (ValkeyModule_CreateCommand(ctx,"test.call_info", test_call_info,"",0,0,0) == VALKEYMODULE_ERR)

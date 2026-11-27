@@ -250,6 +250,7 @@ typedef enum {
     CLUSTERMSG_EXT_TYPE_CLIENT_TLS_PORT,
     CLUSTERMSG_EXT_TYPE_AVAILABILITY_ZONE,
     CLUSTERMSG_EXT_TYPE_REPLICA_PRIORITY,
+    CLUSTERMSG_EXT_TYPE_WRITE_MODE,
 } clusterMsgPingtypes;
 
 /* Helper function for making sure extensions are eight byte aligned. */
@@ -529,6 +530,7 @@ typedef struct slotRange {
 
 struct clusterState {
     clusterNode *myself; /* This node */
+    uint64_t write_mode_version; /* Upper bits store the write mode epoch. Bit 0 is 0 for READWRITE and 1 for READONLY. */
     uint64_t currentEpoch;
     int state;              /* CLUSTER_OK, CLUSTER_FAIL, ... */
     int fail_reason;        /* Why the cluster state changes to fail. */

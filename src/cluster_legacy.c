@@ -776,6 +776,10 @@ int clusterLoadConfig(char *filename) {
             for (j = 1; j < argc; j += 2) {
                 if (strcasecmp(argv[j], "currentEpoch") == 0) {
                     server.cluster->currentEpoch = strtoull(argv[j + 1], NULL, 10);
+                } else if (strcasecmp(argv[j], "writeModeVersion") == 0) {
+                    unsigned long long version;
+                    if (!string2ull(argv[j + 1], sdslen(argv[j + 1]), &version)) goto fmterr;
+                    server.cluster->write_mode_version = version;
                 } else if (strcasecmp(argv[j], "lastVoteEpoch") == 0) {
                     server.cluster->lastVoteEpoch = strtoull(argv[j + 1], NULL, 10);
                 } else {
@@ -1119,9 +1123,10 @@ fmterr:
  * save currentEpoch and lastVoteEpoch. */
 static sds clusterGenNodesConfContent(void) {
     sds content = clusterGenNodesDescription(NULL, CLUSTER_NODE_HANDSHAKE, 0);
-    content = sdscatfmt(content, "vars currentEpoch %U lastVoteEpoch %U\n",
+    content = sdscatfmt(content, "vars currentEpoch %U lastVoteEpoch %U writeModeVersion %U\n",
                         (unsigned long long)server.cluster->currentEpoch,
-                        (unsigned long long)server.cluster->lastVoteEpoch);
+                        (unsigned long long)server.cluster->lastVoteEpoch,
+                        (unsigned long long)server.cluster->write_mode_version);
     return content;
 }
 
@@ -1599,6 +1604,7 @@ void clusterInit(void) {
 
     server.cluster = zmalloc(sizeof(struct clusterState));
     server.cluster->myself = NULL;
+    server.cluster->write_mode_version = 0;
     server.cluster->currentEpoch = 0;
     server.cluster->state = CLUSTER_FAIL;
     server.cluster->fail_reason = CLUSTER_FAIL_NONE;
@@ -1845,6 +1851,8 @@ void clusterReset(int hard) {
         clusterDelNode(node);
     }
     dictReleaseIterator(di);
+
+    server.cluster->write_mode_version = 0;
 
     /* Empty the nodes blacklist. */
     dictEmpty(server.cluster->nodes_black_list, NULL);
@@ -3768,6 +3776,19 @@ static uint32_t writePingExtensions(clusterMsg *hdr, int gossipcount) {
         dictReleaseIterator(di);
     }
 
+    /* Gossip every nonzero write mode version so peers can apply the latest read-only or read-write policy. */
+    if (server.cluster->write_mode_version) {
+        uint32_t write_mode_ext_size = getAlignedPingExtSize(sizeof(uint64_t));
+        if (cursor) {
+            uint64_t version = htonu64(server.cluster->write_mode_version);
+            memcpy(preparePingExt(cursor, CLUSTERMSG_EXT_TYPE_WRITE_MODE, write_mode_ext_size), &version, sizeof(version));
+            // move the cursor
+            cursor = getNextPingExt(cursor);
+        }
+        totlen += write_mode_ext_size;
+        extensions++;
+    }
+
     /* Populate shard_id */
     if (cursor != NULL) {
         clusterMsgPingExtShardId *ext = preparePingExt(cursor, CLUSTERMSG_EXT_TYPE_SHARDID, getShardIdPingExtSize());
@@ -3827,6 +3848,7 @@ int clusterProcessPingExtensions(clusterMsg *hdr, clusterLink *link) {
     int ext_clienttlsport = 0;
     char *ext_shardid = NULL;
     unsigned int ext_replica_priority = 0;
+    uint64_t write_mode_version = 0;
     uint16_t extensions = ntohs(hdr->extensions);
     /* Loop through all the extensions and process them */
     clusterMsgPingExt *ext = getInitialPingExt(hdr, ntohs(hdr->count));
@@ -3884,6 +3906,12 @@ int clusterProcessPingExtensions(clusterMsg *hdr, clusterLink *link) {
             clusterMsgPingExtAvailabilityZone *availability_zone_ext =
                 (clusterMsgPingExtAvailabilityZone *)&(ext->ext[0].availability_zone);
             ext_availability_zone = getLoadableStringExtension(availability_zone_ext->availability_zone);
+        } else if (type == CLUSTERMSG_EXT_TYPE_WRITE_MODE) {
+            /* If the extension has the expected length, decode the peer's write_mode_version for later comparison. */
+            if (getPingExtLength(ext) == getAlignedPingExtSize(sizeof(uint64_t))) {
+                memcpy(&write_mode_version, ext->ext, sizeof(write_mode_version));
+                write_mode_version = ntohu64(write_mode_version);
+            }
         } else if (type == CLUSTERMSG_EXT_TYPE_REPLICA_PRIORITY) {
             clusterMsgPingExtReplicaPriority *priority_ext = (clusterMsgPingExtReplicaPriority *)&(ext->ext[0].replica_priority);
             ext_replica_priority = ntohl(priority_ext->replica_priority);
@@ -3933,6 +3961,12 @@ int clusterProcessPingExtensions(clusterMsg *hdr, clusterLink *link) {
         return 0;
     }
 
+    /* if the write_mode_version received from a peer is higher than the local value,
+     * the node applies it and ensures nodes.conf is saved to disk */
+    if (write_mode_version > server.cluster->write_mode_version) {
+        server.cluster->write_mode_version = write_mode_version;
+        clusterDoBeforeSleep(CLUSTER_TODO_SAVE_CONFIG | CLUSTER_TODO_FSYNC_CONFIG);
+    }
     updateShardId(sender, ext_shardid);
     return 1;
 }
@@ -8239,6 +8273,8 @@ sds genClusterInfoString(sds info) {
 
     info = sdscatfmt(info,
                      "cluster_state:%s\r\n"
+                     "cluster_write_mode:%s\r\n"
+                     "cluster_write_mode_version:%U\r\n"
                      "cluster_slots_assigned:%i\r\n"
                      "cluster_slots_ok:%i\r\n"
                      "cluster_slots_pfail:%i\r\n"
@@ -8253,7 +8289,10 @@ sds genClusterInfoString(sds info) {
                      "cluster_my_epoch:%U\r\n"
                      "cluster_config_save_status:%s\r\n"
                      "cluster_config_last_save_time:%I\r\n",
-                     statestr[server.cluster->state], slots_assigned, slots_ok, slots_pfail, slots_fail,
+                     statestr[server.cluster->state],
+                     clusterIsReadOnly() ? "readonly" : "readwrite",
+                     (unsigned long long)server.cluster->write_mode_version,
+                     slots_assigned, slots_ok, slots_pfail, slots_fail,
                      nodes_pfail, nodes_fail, voting_nodes_pfail, voting_nodes_fail,
                      (unsigned long long)dictSize(server.cluster->nodes), server.cluster->size,
                      (unsigned long long)server.cluster->currentEpoch, (unsigned long long)my_epoch,
@@ -8836,6 +8875,16 @@ void clusterCommandSetSlot(client *c) {
     addReply(c, shared.ok);
 }
 
+typedef enum {
+    CLUSTER_WRITE_MODE_READWRITE = 0,
+    CLUSTER_WRITE_MODE_READONLY = 1,
+} clusterWriteMode;
+
+/* The last bit of write_mode_version is 1 for read-only and 0 for read-write. */
+bool clusterIsReadOnly(void) {
+    return server.cluster_enabled && (server.cluster->write_mode_version & 1);
+}
+
 int clusterCommandSpecial(client *c) {
     if (!strcasecmp(objectGetVal(c->argv[1]), "meet") && (c->argc == 4 || c->argc == 5)) {
         /* CLUSTER MEET <ip> <port> [cport] */
@@ -8967,6 +9016,32 @@ int clusterCommandSpecial(client *c) {
         /* SETSLOT 10 STABLE */
         /* SETSLOT 10 NODE <node ID> */
         clusterCommandSetSlot(c);
+    } else if (!strcasecmp(objectGetVal(c->argv[1]), "setwritemode") && c->argc == 3) {
+        /* Match mode names case-insensitively up to the first NUL, as in CLUSTER RESET. */
+        sds mode_arg = objectGetVal(c->argv[2]);
+        clusterWriteMode mode;
+        if (!strcasecmp(mode_arg, "readonly")) {
+            mode = CLUSTER_WRITE_MODE_READONLY;
+        } else if (!strcasecmp(mode_arg, "readwrite")) {
+            mode = CLUSTER_WRITE_MODE_READWRITE;
+        } else {
+            addReplyErrorObject(c, shared.syntaxerr);
+            return 1;
+        }
+
+        /* Shift out the mode bit to recover the current epoch. */
+        uint64_t write_mode_epoch = server.cluster->write_mode_version >> 1;
+        /* The upper 63 bits hold the epoch. At their maximum, another update would overflow.
+         * if we make this change every second we will exceed this in 292 billion years */
+        if (write_mode_epoch == (UINT64_MAX >> 1)) {
+            addReplyError(c, "Cannot advance cluster write-mode epoch: 63-bit maximum reached");
+            return 1;
+        }
+        /* Advance the epoch even if the mode is unchanged, then pack the requested mode into bit 0. */
+        server.cluster->write_mode_version = ((write_mode_epoch + 1) << 1) | mode;
+        /* At equal epochs, peers prefer READONLY because its packed version is larger. */
+        clusterDoBeforeSleep(CLUSTER_TODO_SAVE_CONFIG | CLUSTER_TODO_FSYNC_CONFIG | CLUSTER_TODO_BROADCAST_ALL);
+        addReply(c, shared.ok);
     } else if (!strcasecmp(objectGetVal(c->argv[1]), "bumpepoch") && c->argc == 2) {
         /* CLUSTER BUMPEPOCH */
         int retval = clusterBumpConfigEpochWithoutConsensus();
@@ -9253,6 +9328,8 @@ const char **clusterCommandExtendedHelp(void) {
         "    Assign slots to current node.",
         "ADDSLOTSRANGE <start slot> <end slot> [<start slot> <end slot> ...]",
         "    Assign slots which are between <start-slot> and <end-slot> to current node.",
+        "SETWRITEMODE READONLY|READWRITE",
+        "    Set the cluster write mode on this node and propagate it asynchronously to peers.",
         "BUMPEPOCH",
         "    Advance the cluster config epoch.",
         "COUNT-FAILURE-REPORTS <node-id>",

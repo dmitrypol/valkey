@@ -139,3 +139,21 @@ start_server {tags {"modules"}} {
         assert_morethan [r memory usage $large_key] 100000
     }
 }
+
+start_cluster 1 0 {tags {modules external:skip cluster}} {
+    R 0 module load [file normalize tests/modules/datatype.so]
+
+    # Use the module's own setter to verify READONLY preserves the custom value and READWRITE permits updates again.
+    test "Cluster write mode controls updates to a module data type" {
+        assert_equal OK [R 0 datatype.set dtkey 1 before]
+        assert_equal {1 before} [R 0 datatype.get dtkey]
+
+        assert_equal OK [R 0 cluster setwritemode readonly]
+        assert_error {READONLY *} {R 0 datatype.set dtkey 2 after}
+        assert_equal {1 before} [R 0 datatype.get dtkey]
+
+        assert_equal OK [R 0 cluster setwritemode readwrite]
+        assert_equal OK [R 0 datatype.set dtkey 2 after]
+        assert_equal {2 after} [R 0 datatype.get dtkey]
+    }
+}

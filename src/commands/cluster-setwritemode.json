@@ -1,0 +1,44 @@
+{
+    "SETWRITEMODE": {
+        "summary": "Sets the cluster write mode on this node and propagates it asynchronously to peers.",
+        "complexity": "O(N) where N is the number of cluster nodes.",
+        "group": "cluster",
+        "since": "9.2.0",
+        "arity": 3,
+        "container": "CLUSTER",
+        "function": "clusterCommand",
+        "command_flags": [
+            "NO_ASYNC_LOADING",
+            "ADMIN",
+            "STALE",
+            "NOSCRIPT",
+            "NO_MULTI"
+        ],
+        "arguments": [
+            {
+                "name": "mode",
+                "type": "oneof",
+                "arguments": [
+                    {
+                        "name": "readonly",
+                        "type": "pure-token",
+                        "token": "READONLY"
+                    },
+                    {
+                        "name": "readwrite",
+                        "type": "pure-token",
+                        "token": "READWRITE"
+                    }
+                ]
+            }
+        ],
+        "reply_schema": {
+            "const": "OK"
+        },
+        "acl_categories": [
+            "ADMIN",
+            "DANGEROUS",
+            "SLOW"
+        ]
+    }
+}
