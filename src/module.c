@@ -4242,6 +4242,7 @@ int VM_GetContextFlags(ValkeyModuleCtx *ctx) {
     if (server.in_exec) flags |= VALKEYMODULE_CTX_FLAGS_MULTI;
 
     if (server.cluster_enabled) flags |= VALKEYMODULE_CTX_FLAGS_CLUSTER;
+    if (clusterIsReadOnly()) flags |= VALKEYMODULE_CTX_FLAGS_READONLY;
 
     if (server.async_loading)
         flags |= VALKEYMODULE_CTX_FLAGS_ASYNC_LOADING;
@@ -7004,6 +7005,16 @@ static void moduleCallCommandHelper(ValkeyModuleCtx *ctx, client *c, robj **argv
             }
             goto cleanup;
         }
+    }
+
+    /* Module calls dispatch directly, including calls from commands whose write
+     * behavior depends on their arguments. Preserve replication and AOF replay. */
+    if ((cmd_flags & CMD_WRITE) && clusterIsReadOnly() && !mustObeyClient(ctx->client) &&
+        !(server.current_client && mustObeyClient(server.current_client)) &&
+        !(is_running_script && scriptIsWriteDirty())) {
+        errno = EROFS;
+        if (error_as_call_replies) reply_error_msg = sdsdup(objectGetVal(shared.roclustererr));
+        goto cleanup;
     }
 
     /* Script mode tests */

@@ -692,3 +692,21 @@ tags {"valgrind:skip"} {
         }
     }
 }
+
+start_cluster 1 0 {tags {modules external:skip cluster}} {
+    R 0 module load [file normalize tests/modules/misc.so]
+
+    test "Module calls respect cluster write mode and expose it in the context flags" {
+        # The misc module registers test.context_readonly to report VALKEYMODULE_CTX_FLAGS_READONLY.
+        assert_equal 0 [R 0 test.context_readonly]
+        assert_equal OK [R 0 test.rm_call_flags {} set key before]
+        R 0 cluster setwritemode readonly
+        # test.rm_call_flags forwards SET through ValkeyModule_Call to exercise its write check.
+        assert_error {READONLY *} {R 0 test.rm_call_flags {} set key rejected}
+        assert_equal 1 [R 0 test.context_readonly]
+        assert_equal before [R 0 test.rm_call_flags {} get key]
+        R 0 cluster setwritemode readwrite
+        assert_equal 0 [R 0 test.context_readonly]
+        assert_equal OK [R 0 test.rm_call_flags {} set key after]
+    }
+}

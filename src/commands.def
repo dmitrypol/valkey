@@ -1010,6 +1010,34 @@ struct COMMAND_ARG CLUSTER_SETSLOT_Args[] = {
 {MAKE_ARG("timeout",ARG_TYPE_INTEGER,-1,"TIMEOUT",NULL,"8.0.0",CMD_ARG_OPTIONAL,0,NULL),.display_text="timeout"},
 };
 
+/********** CLUSTER SETWRITEMODE ********************/
+
+#ifndef SKIP_CMD_HISTORY_TABLE
+/* CLUSTER SETWRITEMODE history */
+#define CLUSTER_SETWRITEMODE_History NULL
+#endif
+
+#ifndef SKIP_CMD_TIPS_TABLE
+/* CLUSTER SETWRITEMODE tips */
+#define CLUSTER_SETWRITEMODE_Tips NULL
+#endif
+
+#ifndef SKIP_CMD_KEY_SPECS_TABLE
+/* CLUSTER SETWRITEMODE key specs */
+#define CLUSTER_SETWRITEMODE_Keyspecs NULL
+#endif
+
+/* CLUSTER SETWRITEMODE mode argument table */
+struct COMMAND_ARG CLUSTER_SETWRITEMODE_mode_Subargs[] = {
+{MAKE_ARG("readonly",ARG_TYPE_PURE_TOKEN,-1,"READONLY",NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("readwrite",ARG_TYPE_PURE_TOKEN,-1,"READWRITE",NULL,NULL,CMD_ARG_NONE,0,NULL)},
+};
+
+/* CLUSTER SETWRITEMODE argument table */
+struct COMMAND_ARG CLUSTER_SETWRITEMODE_Args[] = {
+{MAKE_ARG("mode",ARG_TYPE_ONEOF,-1,NULL,NULL,NULL,CMD_ARG_NONE,2,NULL),.subargs=CLUSTER_SETWRITEMODE_mode_Subargs},
+};
+
 /********** CLUSTER SHARDS ********************/
 
 #ifndef SKIP_CMD_HISTORY_TABLE
@@ -1176,6 +1204,7 @@ struct COMMAND_STRUCT CLUSTER_Subcommands[] = {
 {MAKE_CMD("saveconfig","Forces a node to save the cluster configuration to disk.","O(1)","3.0.0",CMD_DOC_NONE,NULL,NULL,"cluster",COMMAND_GROUP_CLUSTER,CLUSTER_SAVECONFIG_History,0,CLUSTER_SAVECONFIG_Tips,0,clusterCommand,2,CMD_NO_ASYNC_LOADING|CMD_ADMIN|CMD_STALE,ACL_CATEGORY_ADMIN|ACL_CATEGORY_DANGEROUS|ACL_CATEGORY_SLOW,NULL,CLUSTER_SAVECONFIG_Keyspecs,0,NULL,0)},
 {MAKE_CMD("set-config-epoch","Sets the configuration epoch for a new node.","O(1)","3.0.0",CMD_DOC_NONE,NULL,NULL,"cluster",COMMAND_GROUP_CLUSTER,CLUSTER_SET_CONFIG_EPOCH_History,0,CLUSTER_SET_CONFIG_EPOCH_Tips,0,clusterCommand,3,CMD_NO_ASYNC_LOADING|CMD_ADMIN|CMD_STALE,ACL_CATEGORY_ADMIN|ACL_CATEGORY_DANGEROUS|ACL_CATEGORY_SLOW,NULL,CLUSTER_SET_CONFIG_EPOCH_Keyspecs,0,NULL,1),.args=CLUSTER_SET_CONFIG_EPOCH_Args},
 {MAKE_CMD("setslot","Binds a hash slot to a node.","O(1)","3.0.0",CMD_DOC_NONE,NULL,NULL,"cluster",COMMAND_GROUP_CLUSTER,CLUSTER_SETSLOT_History,1,CLUSTER_SETSLOT_Tips,0,clusterCommand,-4,CMD_NO_ASYNC_LOADING|CMD_ADMIN|CMD_STALE|CMD_MAY_REPLICATE,ACL_CATEGORY_ADMIN|ACL_CATEGORY_DANGEROUS|ACL_CATEGORY_SLOW,NULL,CLUSTER_SETSLOT_Keyspecs,0,NULL,3),.args=CLUSTER_SETSLOT_Args},
+{MAKE_CMD("setwritemode","Sets the cluster write mode on this node and propagates it asynchronously to peers.","O(N) where N is the number of cluster nodes.","9.2.0",CMD_DOC_NONE,NULL,NULL,"cluster",COMMAND_GROUP_CLUSTER,CLUSTER_SETWRITEMODE_History,0,CLUSTER_SETWRITEMODE_Tips,0,clusterCommand,3,CMD_NO_ASYNC_LOADING|CMD_ADMIN|CMD_STALE|CMD_NOSCRIPT|CMD_NO_MULTI,ACL_CATEGORY_ADMIN|ACL_CATEGORY_DANGEROUS|ACL_CATEGORY_SLOW,NULL,CLUSTER_SETWRITEMODE_Keyspecs,0,NULL,1),.args=CLUSTER_SETWRITEMODE_Args},
 {MAKE_CMD("shards","Returns the mapping of cluster slots to shards.","O(N) where N is the total number of cluster nodes","7.0.0",CMD_DOC_NONE,NULL,NULL,"cluster",COMMAND_GROUP_CLUSTER,CLUSTER_SHARDS_History,1,CLUSTER_SHARDS_Tips,1,clusterCommand,2,CMD_LOADING|CMD_STALE,ACL_CATEGORY_SLOW,NULL,CLUSTER_SHARDS_Keyspecs,0,NULL,0)},
 {MAKE_CMD("slaves","Lists the replica nodes of a primary node.","O(N) where N is the number of replicas.","3.0.0",CMD_DOC_DEPRECATED,"`CLUSTER REPLICAS`","5.0.0","cluster",COMMAND_GROUP_CLUSTER,CLUSTER_SLAVES_History,0,CLUSTER_SLAVES_Tips,1,clusterCommand,3,CMD_ADMIN|CMD_STALE,ACL_CATEGORY_ADMIN|ACL_CATEGORY_DANGEROUS|ACL_CATEGORY_SLOW,NULL,CLUSTER_SLAVES_Keyspecs,0,NULL,1),.args=CLUSTER_SLAVES_Args},
 {MAKE_CMD("slot-stats","Return an array of slot usage statistics for slots assigned to the current node.","O(N) where N is the total number of slots based on arguments. O(N*log(N)) with ORDERBY subcommand.","8.0.0",CMD_DOC_NONE,NULL,NULL,"cluster",COMMAND_GROUP_CLUSTER,CLUSTER_SLOT_STATS_History,0,CLUSTER_SLOT_STATS_Tips,2,clusterSlotStatsCommand,-4,CMD_STALE|CMD_LOADING,ACL_CATEGORY_SLOW,NULL,CLUSTER_SLOT_STATS_Keyspecs,0,NULL,1),.args=CLUSTER_SLOT_STATS_Args},

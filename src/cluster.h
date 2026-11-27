@@ -83,6 +83,7 @@ sds genClusterInfoString(sds info);
 int handleDebugClusterCommand(client *c);
 const char **clusterDebugCommandExtendedHelp(void);
 /* handle implementation specific cluster commands. Return 1 if handled, 0 otherwise. */
+bool clusterIsReadOnly(void);
 int clusterCommandSpecial(client *c);
 const char **clusterCommandExtendedHelp(void);
 
