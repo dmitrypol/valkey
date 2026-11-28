@@ -651,6 +651,7 @@ void clusterCommandSyncSlotsEstablish(client *c) {
         goto cleanup;
     }
 
+    replicationDisconnectShardReplicas();
     slotMigrationJob *job = createSlotImportJob(c, source_node, name, slot_ranges);
     fireModuleSlotMigrationEvent(job, VALKEYMODULE_SUBEVENT_ATOMIC_SLOT_MIGRATION_IMPORT_STARTED);
     listAddNodeHead(server.cluster->slot_migration_jobs, job);
@@ -1310,6 +1311,7 @@ void clusterCommandMigrateSlots(client *c) {
     }
 
     /* If we reach here, we have successfully parsed all arguments */
+    replicationDisconnectShardReplicas();
     listIter li;
     listRewind(new_slot_migrations, &li);
     listNode *ln;

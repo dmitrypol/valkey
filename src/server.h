@@ -363,6 +363,7 @@ typedef enum blocking_type {
     BLOCKED_POSTPONE, /* Blocked by processCommand, re-try processing later. */
     BLOCKED_SHUTDOWN, /* SHUTDOWN. */
     BLOCKED_INUSE,    /* Key in use by background thread. */
+    BLOCKED_SHARDREPL, /* Waiting for an external shard replication handshake. */
     BLOCKED_NUM,      /* Number of blocked states. */
     BLOCKED_END       /* End of enumeration */
 } blocking_type;
@@ -1366,6 +1367,7 @@ typedef struct ClientReplicationData {
                                            see the definition of replBufBlock. */
     size_t ref_block_pos;                /* Access position of referenced buffer block,
                                            i.e. the next offset to send. */
+    sds shard_topology;                  /* Topology advertised to a cross-cluster replica. */
     sds replica_nodeid;                  /* Node id in cluster mode. */
 
     replicaCompressionState *repl_compression; /* Primary-side compression state for this link, or NULL for plaintext. */
@@ -2312,6 +2314,10 @@ struct valkeyServer {
     /* Replication (replica) */
     char *primary_user;     /* AUTH with this user and primary_auth with primary */
     sds primary_auth;       /* AUTH with this password with primary */
+    bool shard_replicating;        /* Cluster primary consuming a separate cluster's replication stream. */
+    bool shard_inherited_replid;   /* A full shard sync installed the source replication history. */
+    uint64_t shard_request_client; /* Initiator awaiting the initial handshake. */
+    sds shard_source_topology;     /* Verified source identity and slot layout. */
     char *primary_host;     /* Hostname of primary */
     int primary_port;       /* Port of primary */
     int repl_timeout;       /* Timeout after N seconds of primary idle */
@@ -3470,6 +3476,11 @@ void replicationStartPendingFork(void);
 void replicationHandlePrimaryDisconnection(void);
 void replicationCachePrimary(client *c);
 void resizeReplicationBacklog(void);
+bool replicationHasShardReplicas(void);
+void replicationDisconnectShardReplicas(void);
+void replicationSetShardSource(client *c, char *ip, int port);
+void replicationUnsetShardSource(void);
+void replicationCancelShardRequest(client *c);
 void replicationSetPrimary(char *ip, int port, int full_sync_required, bool disconnect_blocked);
 void replicationUnsetPrimary(void);
 void refreshGoodReplicasCount(void);
@@ -4650,6 +4661,8 @@ void debugPauseProcess(void);
 
 void serverInitThreadAttribute(pthread_attr_t *attr);
 int iAmPrimary(void);
+bool isReplicationReplica(void);
+bool isExpirationPrimary(void);
 
 #define STRINGIFY_(x) #x
 #define STRINGIFY(x) STRINGIFY_(x)

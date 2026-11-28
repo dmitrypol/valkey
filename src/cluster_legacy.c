@@ -374,6 +374,7 @@ static void setMigratingSlotDest(int slot, clusterNode *node) {
         if (de) dictDelete(server.cluster->migrating_slots_to, (void *)(intptr_t)slot);
         return;
     }
+    replicationDisconnectShardReplicas();
     if (de) {
         dictSetVal(server.cluster->migrating_slots_to, de, node);
     } else {
@@ -392,6 +393,7 @@ static void setImportingSlotSource(int slot, clusterNode *node) {
         if (de) dictDelete(server.cluster->importing_slots_from, (void *)(intptr_t)slot);
         return;
     }
+    replicationDisconnectShardReplicas();
     if (de) {
         dictSetVal(server.cluster->importing_slots_from, de, node);
     } else {
@@ -4622,6 +4624,11 @@ int clusterProcessPacket(clusterLink *link) {
             }
         }
 
+        /* Loading an external snapshot re-enters the event loop. Account for
+         * heartbeats above, but defer ownership changes that could tear down
+         * the loader's connection. A subsequent heartbeat repeats the layout. */
+        if (server.shard_replicating && server.loading) return 1;
+
         /* Check for role switch: replica -> primary or primary -> replica. */
         if (sender) {
             if (sender_claims_to_be_primary) {
@@ -4938,6 +4945,7 @@ int clusterProcessPacket(clusterLink *link) {
                       sender->name, humanNodename(sender));
             return 1;
         }
+        if (server.shard_replicating) return 1;
         /* Manual failover requested from replicas. Initialize the state
          * accordingly. */
         resetManualFailover();
@@ -4956,6 +4964,7 @@ int clusterProcessPacket(clusterLink *link) {
         clusterNode *n; /* The node the update is about. */
         uint64_t reportedConfigEpoch = ntohu64(msg->data.update.nodecfg.configEpoch);
 
+        if (server.shard_replicating && server.loading) return 1;
         if (!sender) return 1; /* We don't know the sender. */
         n = clusterLookupNode(msg->data.update.nodecfg.nodename, CLUSTER_NAMELEN);
         if (!n) return 1;                                    /* We don't know the reported node. */
@@ -7372,6 +7381,8 @@ int clusterNodeCoversSlot(clusterNode *n, int slot) {
  * an error and C_ERR is returned. */
 int clusterAddSlot(clusterNode *n, int slot) {
     if (server.cluster->slots[slot]) return C_ERR;
+    replicationDisconnectShardReplicas();
+    if (server.shard_replicating) replicationUnsetPrimary();
     clusterNodeSetSlotBit(n, slot);
     server.cluster->slots[slot] = n;
     bitmapClearBit(server.cluster->owner_not_claiming_slot, slot);
@@ -7386,6 +7397,10 @@ int clusterDelSlot(int slot) {
     clusterNode *n = server.cluster->slots[slot];
 
     if (!n) return C_ERR;
+
+    /* A new slot layout invalidates the external source, even when learned via gossip. */
+    replicationDisconnectShardReplicas();
+    if (server.shard_replicating) replicationUnsetPrimary();
 
     /* Cleanup the channels in primary/replica as part of slot deletion. */
     removeChannelsInSlot(slot);
@@ -8756,7 +8771,8 @@ void clusterCommandSetSlot(client *c) {
              * replication, it would also unlikely win the election.
              *
              * And 0x702ff is 7.2.255, we only support new versions in this case. */
-            if (r->repl_data->repl_state == REPLICA_STATE_ONLINE && r->repl_data->replica_version > 0x702ff) {
+            if (!r->repl_data->shard_topology && r->repl_data->repl_state == REPLICA_STATE_ONLINE &&
+                r->repl_data->replica_version > 0x702ff) {
                 num_eligible_replicas++;
             }
         }
@@ -8885,7 +8901,182 @@ bool clusterIsReadOnly(void) {
     return server.cluster_enabled && (server.cluster->write_mode_version & 1);
 }
 
+/* The external source remains the only writer while its replication stream is attached. */
+bool clusterClientWritesBlocked(void) {
+    return server.shard_replicating || clusterIsReadOnly();
+}
+
+/* cluster_size omits empty primaries. Require one slot-owning primary per shard. */
+static bool clusterShardsHaveSlotOwners(void) {
+    dictIterator shards;
+    dictInitIterator(&shards, server.cluster->shards);
+    dictEntry *shard;
+    while ((shard = dictNext(&shards))) {
+        int primaries = 0;
+        listIter nodes;
+        listNode *member;
+        listRewind(dictGetVal(shard), &nodes);
+        while ((member = listNext(&nodes))) {
+            clusterNode *node = listNodeValue(member);
+            if (!nodeIsPrimary(node)) continue;
+            if (!node->numslots) return false;
+            primaries++;
+        }
+        if (primaries != 1) return false;
+    }
+    return true;
+}
+
+/* Independent clusters have different node IDs. Use each owner's first slot as
+ * its label, and the high bit to distinguish the handshake peer's own slots. */
+static bool encodeShardSlotOwners(uint16_t *slots) {
+    dict *first_slots = dictCreate(&clusterSlotDictType);
+    int slot;
+    for (slot = 0; slot < CLUSTER_SLOTS; slot++) {
+        clusterNode *owner = server.cluster->slots[slot];
+        if (isSlotUnclaimed(slot) || !nodeIsPrimary(owner) || !nodeHasAddr(owner) ||
+            !nodeInNormalState(owner) || (owner != myself && countKeysInSlot(slot)))
+            break;
+
+        dictEntry *existing;
+        dictEntry *entry = dictAddRaw(first_slots, owner, &existing);
+        if (entry) dictSetUnsignedIntegerVal(entry, slot);
+        int first_slot = dictGetUnsignedIntegerVal(entry ? entry : existing);
+        slots[slot] = htons(first_slot | (owner == myself ? 0x8000 : 0));
+    }
+    dictRelease(first_slots);
+    return slot == CLUSTER_SLOTS;
+}
+
+/* Return an owned handshake descriptor (node ID, layout digest, database count),
+ * or NULL when the local topology cannot supply a stable snapshot. */
+sds clusterShardReplicationTopology(void) {
+    if (!server.cluster_enabled || server.import_mode || server.cluster->state != CLUSTER_OK ||
+        !nodeIsPrimary(myself) || !myself->numslots || server.cluster->mf_end ||
+        dictSize(server.cluster->migrating_slots_to) ||
+        dictSize(server.cluster->importing_slots_from) ||
+        clusterIsAnySlotImporting() || clusterIsAnySlotExporting() ||
+        !clusterShardsHaveSlotOwners())
+        return NULL;
+
+    struct {
+        uint16_t slots[CLUSTER_SLOTS];
+        unsigned char module_types[20];
+    } *layout = zcalloc(sizeof(*layout));
+    sds descriptor = NULL;
+    if (encodeShardSlotOwners(layout->slots)) {
+        char digest[41];
+        moduleTypeEncodingDigest(layout->module_types);
+        sha1hex(digest, (char *)layout, sizeof(*layout));
+        descriptor = sdscatprintf(sdsempty(), "%.*s:%s:%d", CLUSTER_NAMELEN,
+                                  myself->name, digest, server.dbnum);
+    }
+    zfree(layout);
+    return descriptor;
+}
+
+/* Require a foreign node ID and an exact match for the remaining descriptor fields. */
+int clusterValidateShardReplicationSource(const char *descriptor) {
+    if (!server.cluster_enabled ||
+        strlen(descriptor) <= CLUSTER_NAMELEN || descriptor[CLUSTER_NAMELEN] != ':' ||
+        verifyClusterNodeId(descriptor, CLUSTER_NAMELEN) != C_OK ||
+        clusterLookupNode(descriptor, CLUSTER_NAMELEN))
+        return C_ERR;
+    sds local = clusterShardReplicationTopology();
+    size_t prefix_len = CLUSTER_NAMELEN + 1;
+    bool compatible = local && !strcmp(local + prefix_len, descriptor + prefix_len);
+    sdsfree(local);
+    return compatible ? C_OK : C_ERR;
+}
+
+/* Validate the source IP and port and store the parsed port on success (C_OK).
+ * On failure, reply to the client and return C_ERR. */
+static int parseShardSourceEndpoint(client *c, sds ip, long long *port) {
+    struct in6_addr addr;
+    if (strlen(ip) != sdslen(ip) ||
+        (inet_pton(AF_INET, ip, &addr) != 1 && inet_pton(AF_INET6, ip, &addr) != 1)) {
+        addReplyError(c, "Invalid source IP address");
+        return C_ERR;
+    }
+    if (getLongLongFromObjectOrReply(c, c->argv[3], port, "Invalid source port") != C_OK)
+        return C_ERR;
+    if (*port <= 0 || *port > 65535) {
+        addReplyError(c, "Source port is out of range");
+        return C_ERR;
+    }
+    return C_OK;
+}
+
+/* Return NULL if this node can receive a shard replication stream, or a static error string. */
+static const char *shardReplicationDestinationError(void) {
+    if (!nodeIsPrimary(myself) || !myself->numslots)
+        return "SHARDREPLICATE requires a primary that owns slots";
+    if (!clusterIsReadOnly())
+        return "Run CLUSTER SETWRITEMODE READONLY and wait for it to reach this primary "
+               "before attaching";
+    if (server.primary_host || server.shard_replicating)
+        return "This node already has a replication source";
+    if (replicationHasShardReplicas())
+        return "This node already supplies another cluster with shard replication";
+    sds local = clusterShardReplicationTopology();
+    if (!local)
+        return "SHARDREPLICATE requires a healthy cluster with stable slot ownership";
+    sdsfree(local);
+    return NULL;
+}
+
+/* NO ONE replies after local detachment. Attach waits for the source handshake. */
+static void clusterCommandShardReplicate(client *c) {
+    sds ip = objectGetVal(c->argv[2]);
+    sds port_arg = objectGetVal(c->argv[3]);
+    if (sdslen(ip) == 2 && !strcasecmp(ip, "no") &&
+        sdslen(port_arg) == 3 && !strcasecmp(port_arg, "one")) {
+        if (!nodeIsPrimary(myself)) {
+            addReplyError(c, "SHARDREPLICATE NO ONE requires a shard primary");
+            return;
+        }
+        replicationUnsetShardSource();
+        addReply(c, shared.ok);
+        return;
+    }
+    long long port;
+    if (parseShardSourceEndpoint(c, ip, &port) != C_OK) return;
+    const char *error = shardReplicationDestinationError();
+    if (error) {
+        addReplyError(c, error);
+        return;
+    }
+    replicationSetShardSource(c, ip, port);
+}
+
+/* Return true for subcommands blocked during shard replication.
+ * SHARDREPLICATE must reach its handler so NO ONE can detach the shard. */
+static bool conflictsWithShardReplication(const char *subcommand) {
+    static const char *const commands[] = {
+        /* Change slot ownership or migrate slots. */
+        "addslots", "delslots", "addslotsrange", "delslotsrange", "setslot",
+        "migrateslots", "syncslots",
+        /* Discard slot data or assignments. */
+        "flushslot", "flushslots",
+        /* Change cluster membership or the local role. */
+        "meet", "forget", "replicate", "reset",
+    };
+    for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
+        if (!strcasecmp(subcommand, commands[i])) return true;
+    }
+    return false;
+}
+
 int clusterCommandSpecial(client *c) {
+    char *subcommand = objectGetVal(c->argv[1]);
+    if (server.shard_replicating && conflictsWithShardReplication(subcommand)) {
+        addReplyError(c, "Cannot change the shard topology or flush slots during shard replication");
+        return 1;
+    }
+    if (!strcasecmp(subcommand, "shardreplicate") && c->argc == 4) {
+        clusterCommandShardReplicate(c);
+        return 1;
+    }
     if (!strcasecmp(objectGetVal(c->argv[1]), "meet") && (c->argc == 4 || c->argc == 5)) {
         /* CLUSTER MEET <ip> <port> [cport] */
         long long port, cport;
@@ -9328,6 +9519,11 @@ const char **clusterCommandExtendedHelp(void) {
         "    Assign slots to current node.",
         "ADDSLOTSRANGE <start slot> <end slot> [<start slot> <end slot> ...]",
         "    Assign slots which are between <start-slot> and <end-slot> to current node.",
+        "SHARDREPLICATE <ip> <port> | NO ONE",
+        "    Replace this shard's data with the source snapshot and follow its writes.",
+        "    First set the destination cluster to READONLY. Both clusters must have matching slot layouts,",
+        "    database counts, and module data type encodings.",
+        "    NO ONE detaches the source and retains local data, replicas, and the current cluster write mode.",
         "SETWRITEMODE READONLY|READWRITE",
         "    Set the cluster write mode on this node and propagate it asynchronously to peers.",
         "BUMPEPOCH",

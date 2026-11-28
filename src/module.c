@@ -3998,7 +3998,7 @@ int modulePopulateReplicationInfoStructure(void *ri, int structver) {
     ValkeyModuleReplicationInfoV1 *ri1 = ri;
     memset(ri1, 0, sizeof(*ri1));
     ri1->version = structver;
-    ri1->primary = server.primary_host == NULL;
+    ri1->primary = !isReplicationReplica();
     ri1->primary_host = server.primary_host ? server.primary_host : "";
     ri1->primary_port = server.primary_port;
     ri1->replid1 = server.replid;
@@ -4242,7 +4242,7 @@ int VM_GetContextFlags(ValkeyModuleCtx *ctx) {
     if (server.in_exec) flags |= VALKEYMODULE_CTX_FLAGS_MULTI;
 
     if (server.cluster_enabled) flags |= VALKEYMODULE_CTX_FLAGS_CLUSTER;
-    if (clusterIsReadOnly()) flags |= VALKEYMODULE_CTX_FLAGS_READONLY;
+    if (clusterClientWritesBlocked()) flags |= VALKEYMODULE_CTX_FLAGS_READONLY;
 
     if (server.async_loading)
         flags |= VALKEYMODULE_CTX_FLAGS_ASYNC_LOADING;
@@ -4261,7 +4261,7 @@ int VM_GetContextFlags(ValkeyModuleCtx *ctx) {
     if (server.saveparamslen > 0) flags |= VALKEYMODULE_CTX_FLAGS_RDB;
 
     /* Replication flags */
-    if (server.primary_host == NULL) {
+    if (!isReplicationReplica()) {
         flags |= VALKEYMODULE_CTX_FLAGS_PRIMARY;
     } else {
         flags |= VALKEYMODULE_CTX_FLAGS_REPLICA;
@@ -7009,7 +7009,7 @@ static void moduleCallCommandHelper(ValkeyModuleCtx *ctx, client *c, robj **argv
 
     /* Module calls dispatch directly, including calls from commands whose write
      * behavior depends on their arguments. Preserve replication and AOF replay. */
-    if ((cmd_flags & CMD_WRITE) && clusterIsReadOnly() && !mustObeyClient(ctx->client) &&
+    if ((cmd_flags & CMD_WRITE) && clusterClientWritesBlocked() && !mustObeyClient(ctx->client) &&
         !(server.current_client && mustObeyClient(server.current_client)) &&
         !(is_running_script && scriptIsWriteDirty())) {
         errno = EROFS;
@@ -7069,7 +7069,7 @@ static void moduleCallCommandHelper(ValkeyModuleCtx *ctx, client *c, robj **argv
             }
         }
 
-        if (server.primary_host && server.repl_state != REPL_STATE_CONNECTED && server.repl_serve_stale_data == 0 &&
+        if (isReplicationReplica() && server.repl_state != REPL_STATE_CONNECTED && server.repl_serve_stale_data == 0 &&
             !(cmd_flags & CMD_STALE)) {
             errno = ESPIPE;
             if (error_as_call_replies) {
@@ -9757,7 +9757,7 @@ int VM_AddPostNotificationJob(ValkeyModuleCtx *ctx,
                               ValkeyModulePostNotificationJobFunc callback,
                               void *privdata,
                               void (*free_privdata)(void *)) {
-    if (server.loading || (server.primary_host && server.repl_replica_ro)) {
+    if (server.loading || server.shard_replicating || (server.primary_host && server.repl_replica_ro)) {
         return VALKEYMODULE_ERR;
     }
     ValkeyModulePostExecUnitJob *job = zmalloc(sizeof(*job));
@@ -15230,6 +15230,25 @@ void moduleCommand(client *c) {
     } else {
         addReplySubcommandSyntaxError(c);
         return;
+    }
+}
+
+/* Native type IDs include their RDB encoding version. Module registration order
+ * can differ between peers, so combine the IDs independently of load order. */
+void moduleTypeEncodingDigest(unsigned char digest[20]) {
+    listIter mod_iter;
+    listNode *mod_node;
+    listRewind(modules, &mod_iter);
+    while ((mod_node = listNext(&mod_iter))) {
+        ValkeyModule *module = listNodeValue(mod_node);
+        listIter type_iter;
+        listNode *type_node;
+        listRewind(module->types, &type_iter);
+        while ((type_node = listNext(&type_iter))) {
+            moduleType *type = listNodeValue(type_node);
+            uint64_t id = htonu64(type->id);
+            xorDigest(digest, &id, sizeof(id));
+        }
     }
 }
 

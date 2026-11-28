@@ -84,6 +84,9 @@ int handleDebugClusterCommand(client *c);
 const char **clusterDebugCommandExtendedHelp(void);
 /* handle implementation specific cluster commands. Return 1 if handled, 0 otherwise. */
 bool clusterIsReadOnly(void);
+bool clusterClientWritesBlocked(void);
+sds clusterShardReplicationTopology(void);
+int clusterValidateShardReplicationSource(const char *descriptor);
 int clusterCommandSpecial(client *c);
 const char **clusterCommandExtendedHelp(void);
 

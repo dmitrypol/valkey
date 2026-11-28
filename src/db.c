@@ -96,7 +96,7 @@ robj *lookupKey(serverDb *db, robj *key, int flags) {
          * It's possible that the WRITE flag is set even during a readonly
          * command, since the command may trigger events that cause modules to
          * perform additional writes. */
-        int is_ro_replica = server.primary_host && server.repl_replica_ro;
+        int is_ro_replica = server.shard_replicating || (server.primary_host && server.repl_replica_ro);
         int expire_flags = 0;
         if (flags & LOOKUP_WRITE && !is_ro_replica) expire_flags |= EXPIRE_FORCE_DELETE_EXPIRED;
         if (flags & LOOKUP_NOEXPIRE) expire_flags |= EXPIRE_AVOID_DELETE_EXPIRED;
@@ -2008,7 +2008,7 @@ robj *setExpire(client *c, serverDb *db, robj *key, long long when) {
         serverAssert(added);
     }
 
-    int writable_replica = server.primary_host && server.repl_replica_ro == 0;
+    int writable_replica = isReplicationReplica() && server.repl_replica_ro == 0;
     if (c && writable_replica && !c->flag.primary) rememberReplicaKeyWithExpire(db, key);
     return val;
 }
