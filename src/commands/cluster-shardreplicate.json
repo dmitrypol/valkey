@@ -1,0 +1,67 @@
+{
+    "SHARDREPLICATE": {
+        "summary": "Attaches a read-only shard primary to the matching primary in another cluster, or detaches the source while retaining local data and replicas.",
+        "complexity": "O(N + S*D + T) to validate N cluster nodes, S slots, D databases, and T registered module types on attachment. Snapshot transfer is asynchronous.",
+        "group": "cluster",
+        "since": "9.2.0",
+        "arity": 4,
+        "container": "CLUSTER",
+        "function": "clusterCommand",
+        "command_flags": [
+            "NO_ASYNC_LOADING",
+            "ADMIN",
+            "STALE",
+            "NOSCRIPT",
+            "NO_MULTI",
+            "BLOCKING"
+        ],
+        "arguments": [
+            {
+                "name": "source",
+                "type": "oneof",
+                "arguments": [
+                    {
+                        "name": "endpoint",
+                        "type": "block",
+                        "arguments": [
+                            {
+                                "name": "ip",
+                                "type": "string"
+                            },
+                            {
+                                "name": "port",
+                                "type": "integer"
+                            }
+                        ]
+                    },
+                    {
+                        "name": "no-one",
+                        "type": "block",
+                        "arguments": [
+                            {
+                                "name": "no",
+                                "type": "pure-token",
+                                "token": "NO"
+                            },
+                            {
+                                "name": "one",
+                                "type": "pure-token",
+                                "token": "ONE"
+                            }
+                        ]
+                    }
+                ]
+            }
+        ],
+        "reply_schema": {
+            "const": "OK",
+            "description": "The source accepted the full synchronization request, or the destination has detached its incoming source."
+        },
+        "acl_categories": [
+            "ADMIN",
+            "BLOCKING",
+            "DANGEROUS",
+            "SLOW"
+        ]
+    }
+}

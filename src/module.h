@@ -206,6 +206,7 @@ void unblockClientFromModule(client *c);
 void moduleHandleBlockedClients(void);
 void moduleBlockedClientTimedOut(client *c, int from_module);
 void modulePipeReadable(aeEventLoop *el, int fd, void *privdata, int mask);
+void moduleTypeEncodingDigest(unsigned char digest[20]);
 size_t moduleCount(void);
 void moduleAcquireGIL(void);
 int moduleTryAcquireGIL(void);

@@ -1471,6 +1471,42 @@ error:
     return C_ERR;
 }
 
+/* A negative hint lets ordinary slot updates skip the replica list. */
+static bool may_have_shard_replicas = false;
+
+/* An outgoing shard replication stream prevents this node from attaching to another source. */
+bool replicationHasShardReplicas(void) {
+    if (!may_have_shard_replicas) return false;
+    listIter replicas;
+    listNode *node;
+    listRewind(server.replicas, &replicas);
+    while ((node = listNext(&replicas))) {
+        client *replica = listNodeValue(node);
+        if (replica->repl_data->shard_topology) return true;
+    }
+    may_have_shard_replicas = false;
+    return false;
+}
+
+/* A topology change invalidates external replication streams. Local replicas stay connected. */
+void replicationDisconnectShardReplicas(void) {
+    if (!may_have_shard_replicas) return;
+    may_have_shard_replicas = false;
+    listIter replicas;
+    listNode *node;
+    listRewind(server.replicas, &replicas);
+    while ((node = listNext(&replicas))) {
+        client *replica = listNodeValue(node);
+        if (replica->repl_data->shard_topology) freeClientAsync(replica);
+    }
+}
+
+/* Only a stable, independent cluster primary may supply a shard's replication stream. */
+static sds shardSourceTopology(void) {
+    if (!server.cluster_enabled || server.primary_host) return NULL;
+    return clusterShardReplicationTopology();
+}
+
 /* SYNC and PSYNC command implementation. */
 void syncCommand(client *c) {
     /* ignore SYNC if already replica or in monitor mode */
@@ -1481,11 +1517,22 @@ void syncCommand(client *c) {
     /* Wait for any IO pending operation to finish before changing the client state to replica */
     waitForClientIO(c);
 
+    if (c->repl_data->shard_topology) {
+        sds topology = shardSourceTopology();
+        int valid = topology && !sdscmp(topology, c->repl_data->shard_topology);
+        sdsfree(topology);
+        if (!valid) {
+            addReplyError(c, "Source shard topology changed before synchronization");
+            return;
+        }
+        may_have_shard_replicas = true;
+    }
+
     /* Check if this is a failover request to a replica with the same replid and
      * become a primary if so. */
     if (c->argc > 3 && !strcasecmp(objectGetVal(c->argv[0]), "psync") && !strcasecmp(objectGetVal(c->argv[3]), "failover")) {
         serverLog(LL_NOTICE, "Failover request received for replid %s.", (unsigned char *)objectGetVal(c->argv[1]));
-        if (!server.primary_host) {
+        if (!isReplicationReplica()) {
             addReplyError(c, "PSYNC FAILOVER can't be sent to a master.");
             return;
         }
@@ -1649,7 +1696,8 @@ void syncCommand(client *c) {
          * compression capability bits are masked out of the superset check so
          * that check concerns only the non-compression capabilities. */
         int trigger_capa = ln ? (replica->repl_data->replica_capa & ~REPLICA_CAPA_COMPRESSION_MASK) : 0;
-        if (ln && ((c->repl_data->replica_capa & trigger_capa) == trigger_capa) &&
+        /* An older snapshot might predate the verified slot layout. */
+        if (!c->repl_data->shard_topology && ln && ((c->repl_data->replica_capa & trigger_capa) == trigger_capa) &&
             c->repl_data->replica_req == replica->repl_data->replica_req &&
             replSelectFullSyncCompression(c->repl_data->replica_capa) == server.rdb_child_sync_algo) {
             /* Perfect, the server is already registering differences for
@@ -1763,6 +1811,7 @@ void freeClientReplicationData(client *c) {
     }
     if (c->flag.primary) replicationHandlePrimaryDisconnection();
     sdsfree(c->repl_data->replica_addr);
+    sdsfree(c->repl_data->shard_topology);
     sdsfree(c->repl_data->replica_nodeid);
     zfree(c->repl_data);
     c->repl_data = NULL;
@@ -1989,6 +2038,23 @@ void replconfCommand(client *c) {
                 return;
             }
             c->repl_data->associated_rdb_client_id = (uint64_t)client_id;
+        } else if (!strcasecmp(objectGetVal(c->argv[j]), "shard-topology")) {
+            sds destination_id = objectGetVal(c->argv[j + 1]);
+            if (c->argc != 3 || !server.cluster_enabled ||
+                sdslen(destination_id) != CLUSTER_NAMELEN ||
+                clusterLookupNode(destination_id, sdslen(destination_id))) {
+                addReplyError(c, "Shard replication requires a primary in a separate cluster");
+                return;
+            }
+            sds topology = shardSourceTopology();
+            if (!topology) {
+                addReplyError(c, "Source shard topology is unavailable");
+                return;
+            }
+            sdsfree(c->repl_data->shard_topology);
+            c->repl_data->shard_topology = topology;
+            addReplyStatus(c, topology);
+            return;
         } else if (!strcasecmp(objectGetVal(c->argv[j]), "set-cluster-node-id")) {
             /* REPLCONF SET-CLUSTER-NODE-ID <node-id> */
             if (!server.cluster_enabled) {
@@ -2796,7 +2862,14 @@ int tryReadBulkPayloadMetadata(connection *conn, char *buf, char *eofmark, char 
     return C_OK;
 }
 
-void replicaBeforeLoadPrimaryRDB(connection *conn, int use_diskless_load) {
+static int replicaBeforeLoadPrimaryRDB(connection *conn, int use_diskless_load) {
+    /* The destination topology may have changed while receiving the snapshot. */
+    if (server.shard_replicating && clusterValidateShardReplicationSource(server.shard_source_topology) != C_OK) {
+        serverLog(LL_WARNING, "Refusing to load a shard snapshot after a topology change");
+        cancelReplicationHandshake(1);
+        return C_ERR;
+    }
+
     /* We need to stop any AOF rewriting child before flushing and parsing
      * the RDB; otherwise, we'll create a copy-on-write disaster. */
     if (server.aof_state != AOF_OFF) stopAppendOnly();
@@ -2820,6 +2893,7 @@ void replicaBeforeLoadPrimaryRDB(connection *conn, int use_diskless_load) {
      * rdbLoad() will call the event loop to process events from time to
      * time for non blocking loading. */
     connSetReadHandler(conn, NULL);
+    return C_OK;
 }
 
 /* Helper function to update the full sync duration metric for both single/dual channel replication. */
@@ -2874,6 +2948,7 @@ void replicaAfterLoadPrimaryRDB(connection *conn, rdbSaveInfo *rsi, int disk_bas
          * we are starting a new history. */
         memcpy(server.replid, server.primary->repl_data->replid, sizeof(server.replid));
         server.primary_repl_offset = server.primary->repl_data->reploff;
+        if (server.shard_replicating) server.shard_inherited_replid = true;
     }
     clearReplicationId2();
 
@@ -3166,7 +3241,7 @@ read_from_socket:
         serverLog(LL_NOTICE, "PRIMARY <-> REPLICA sync: receiving %lld bytes from primary to parser", (long long)server.repl_transfer_size);
     }
 
-    replicaBeforeLoadPrimaryRDB(conn, 1);
+    if (replicaBeforeLoadPrimaryRDB(conn, 1) == C_ERR) return;
     if (replicaLoadPrimaryRDBFromSocket(conn, buf, eofmark, &usemark, &rsi) == C_ERR ||
         replicaCheckFullSyncOffsetFromRdb(&rsi) == C_ERR) {
         serverLog(LL_WARNING, "Failed to load RDB");
@@ -4106,7 +4181,8 @@ int replicaSendPsyncCommand(connection *conn) {
         dualChannelServerLog(LL_NOTICE,
                              "Trying a partial resynchronization using main channel (request %s:%s).",
                              psync_replid, psync_offset);
-    } else if (server.cached_primary) {
+    } else if (server.cached_primary && !server.shard_replicating) {
+        /* A cross-cluster backlog may span ownership changes while disconnected. */
         psync_replid = server.cached_primary->repl_data->replid;
         snprintf(psync_offset, sizeof(psync_offset), "%lld", server.cached_primary->repl_data->reploff + 1);
         serverLog(LL_NOTICE, "Trying a partial resynchronization (request %s:%s).", psync_replid, psync_offset);
@@ -4211,7 +4287,7 @@ int replicaProcessPsyncReply(connection *conn) {
             return PSYNC_CONTINUE;
         }
         /* We sent PSYNC ? -1, so there is no cached primary to continue from. */
-        if (server.cached_primary == NULL) {
+        if (server.cached_primary == NULL || server.shard_replicating) {
             serverLog(LL_WARNING, "Primary replied +CONTINUE to a full resynchronization request, will try later.");
             sdsfree(reply);
             return PSYNC_TRY_LATER;
@@ -4509,7 +4585,7 @@ int syncWithPrimaryHandleSendHandshakeState(connection *conn) {
         lens[argc] = strlen(REPLICA_CAPA_INBAND_REPL_STR);
         argc++;
     }
-    if (server.dual_channel_replication) {
+    if (server.dual_channel_replication && !server.shard_replicating) {
         argv[argc] = "capa";
         lens[argc] = strlen("capa");
         argc++;
@@ -4530,7 +4606,8 @@ int syncWithPrimaryHandleSendHandshakeState(connection *conn) {
 
     /* Inform the primary of our (replica) node name. */
     if (server.cluster_enabled) {
-        char *argv[] = {"REPLCONF", "SET-CLUSTER-NODE-ID", server.cluster->myself->name};
+        char *option = server.shard_replicating ? "shard-topology" : "SET-CLUSTER-NODE-ID";
+        char *argv[] = {"REPLCONF", option, server.cluster->myself->name};
         size_t lens[] = {strlen(argv[0]), strlen(argv[1]), CLUSTER_NAMELEN};
         err = sendCommandArgv(conn, 3, argv, lens);
         if (err) goto err;
@@ -4619,7 +4696,24 @@ int syncWithPrimaryHandleReceiveVersionReplyState(connection *conn) {
     return C_OK;
 }
 
+/* Pin the first accepted descriptor so later handshakes require the same source. */
+static int receiveShardSourceTopology(connection *conn) {
+    sds reply = receiveSynchronousResponse(conn);
+    const char *descriptor = reply && reply[0] == '+' ? reply + 1 : NULL;
+    bool valid = descriptor && clusterValidateShardReplicationSource(descriptor) == C_OK;
+    if (valid) {
+        if (server.shard_source_topology)
+            valid = !strcmp(descriptor, server.shard_source_topology);
+        else
+            server.shard_source_topology = sdsnew(descriptor);
+    }
+    sdsfree(reply);
+    if (!valid) serverLog(LL_WARNING, "Rejecting incompatible shard replication source topology");
+    return valid ? C_OK : C_ERR;
+}
+
 int syncWithPrimaryHandleReceiveNodeIDReplyState(connection *conn) {
+    if (server.shard_replicating) return receiveShardSourceTopology(conn);
     sds err = receiveSynchronousResponse(conn);
     if (err == NULL) return C_ERR;
     /* Ignore the error if any, we don't care if it failed, it is best effort. */
@@ -4652,6 +4746,47 @@ int syncWithPrimaryHandleSendPsyncState(connection *conn) {
     return C_OK;
 }
 
+/* Clear the pending request. If its client is still waiting, reply with the
+ * supplied error (or OK if NULL) and unblock it. */
+static void finishShardReplicationRequest(const char *error) {
+    client *c = lookupClientByID(server.shard_request_client);
+    server.shard_request_client = 0;
+    if (c && c->flag.blocked && c->bstate->btype == BLOCKED_SHARDREPL) {
+        if (error)
+            addReplyError(c, error);
+        else
+            addReply(c, shared.ok);
+        updateStatsOnUnblock(c, 0, 0, error ? ERROR_COMMAND_FAILED : 0);
+        unblockClient(c, 1);
+    }
+}
+
+/* Restore the original primary without changing its dataset, backlog or replicas. */
+static void resetPendingShardSource(void) {
+    server.shard_replicating = false;
+    sdsfree(server.shard_source_topology);
+    server.shard_source_topology = NULL;
+    sdsfree(server.primary_host);
+    server.primary_host = NULL;
+    server.repl_state = REPL_STATE_NONE;
+}
+
+/* If attachment is pending, report the handshake failure and reset the source state. */
+static void rejectShardReplicationRequest(void) {
+    if (!server.shard_request_client) return;
+    finishShardReplicationRequest("Could not validate the source topology or establish shard replication");
+    resetPendingShardSource();
+}
+
+/* If the requesting client leaves before acceptance, cancel the pending load.
+ * finishShardReplicationRequest clears the ID before a normal unblock. */
+void replicationCancelShardRequest(client *c) {
+    if (c->id != server.shard_request_client) return;
+    server.shard_request_client = 0;
+    cancelReplicationHandshake(0);
+    resetPendingShardSource();
+}
+
 void syncWithPrimaryHandleError(connection **conn) {
     connClose(*conn);
     *conn = NULL;
@@ -4662,6 +4797,7 @@ void syncWithPrimaryHandleError(connection **conn) {
     }
     replicationAbortSyncTransfer();
     server.repl_state = REPL_STATE_CONNECT;
+    rejectShardReplicationRequest();
 }
 
 /*
@@ -4866,6 +5002,14 @@ void syncWithPrimary(connection *conn) {
 
     psync_result = replicaProcessPsyncReply(conn);
     if (psync_result == PSYNC_WAIT_REPLY) return; /* Try again later... */
+
+    if (server.shard_replicating) {
+        if (psync_result != PSYNC_FULLRESYNC) {
+            syncWithPrimaryHandleError(&conn);
+            return;
+        }
+        if (server.shard_request_client) finishShardReplicationRequest(NULL);
+    }
 
     /* Check the status of the planned failover. We expect PSYNC_CONTINUE,
      * but there is nothing technically wrong with a full resync which
@@ -5095,6 +5239,10 @@ int cancelReplicationHandshake(int reconnect) {
         return 0;
     }
 
+    if (server.shard_request_client) {
+        rejectShardReplicationRequest();
+        return 1;
+    }
     if (!reconnect) return 1;
 
     /* try to re-connect without waiting for replicationCron, this is needed
@@ -5105,9 +5253,49 @@ int cancelReplicationHandshake(int reconnect) {
     return 1;
 }
 
+/* Start the source handshake and block the client for its result, or reply on failure.
+ * Replication owns the copy of the source IP and frees it during cleanup. */
+void replicationSetShardSource(client *c, char *ip, int port) {
+    serverAssert(!server.primary_host && !server.shard_replicating && !server.primary);
+    if (c->flag.deny_blocking || isReplicatedClient(c) || !c->conn) {
+        addReplyError(c, "Shard replication requires a client that can wait for the source handshake");
+        return;
+    }
+    server.primary_host = sdsnew(ip);
+    server.primary_port = port;
+    server.shard_replicating = true;
+    replicationDiscardCachedPrimary(); /* The two clusters have independent histories. */
+    if (connectWithPrimary() == C_ERR) {
+        resetPendingShardSource();
+        addReplyError(c, "Could not connect to shard replication source");
+        return;
+    }
+    server.shard_request_client = c->id;
+    initClientBlockingState(c);
+    c->bstate->timeout = 0;
+    c->flag.pending_command = 0;
+    blockClient(c, BLOCKED_SHARDREPL);
+}
+
+/* Cancel any waiting request, clear the shard flags and free the saved topology.
+ * The caller handles the primary connection and address. */
+static void clearShardSource(void) {
+    if (server.shard_request_client) finishShardReplicationRequest("Shard replication canceled");
+    server.shard_replicating = false;
+    server.shard_inherited_replid = false;
+    sdsfree(server.shard_source_topology);
+    server.shard_source_topology = NULL;
+}
+
 /* Set replication to the specified primary address and port. */
 void replicationSetPrimary(char *ip, int port, int full_sync_required, bool disconnect_blocked) {
     int was_primary = server.primary_host == NULL;
+    if (was_primary && server.cluster_enabled) replicationDisconnectShardReplicas();
+    if (server.shard_replicating) {
+        clearShardSource();
+        replicationDiscardCachedPrimary();
+        full_sync_required = 1;
+    }
 
     sdsfree(server.primary_host);
     server.primary_host = NULL;
@@ -5171,9 +5359,17 @@ void replicationSetPrimary(char *ip, int port, int full_sync_required, bool disc
     connectWithPrimary();
 }
 
+/* A shard primary can detach without affecting an ordinary intra-cluster link. */
+void replicationUnsetShardSource(void) {
+    if (server.shard_replicating) replicationUnsetPrimary();
+}
+
 /* Cancel replication, setting the instance as a primary itself. */
 void replicationUnsetPrimary(void) {
     if (server.primary_host == NULL) return; /* Nothing to do. */
+    bool was_shard_source_attached = server.shard_replicating;
+    bool fork_history = !was_shard_source_attached || server.shard_inherited_replid;
+    if (was_shard_source_attached) clearShardSource();
 
     /* Fire the primary link modules event. */
     if (server.repl_state == REPL_STATE_CONNECTED)
@@ -5183,7 +5379,19 @@ void replicationUnsetPrimary(void) {
      * replicationHandlePrimaryDisconnection which can attempt to re-connect. */
     sdsfree(server.primary_host);
     server.primary_host = NULL;
-    if (server.primary && server.primary == server.current_client) {
+    if (was_shard_source_attached && server.primary) {
+        /* A deferred free must not cache this old client or tear down a new
+         * attachment established by the next command on the same connection. */
+        client *source = server.primary;
+        waitForClientIO(source);
+        source->flag.primary = 0;
+        server.primary = NULL;
+        server.repl_transfer_s = NULL;
+        if (source == server.current_client)
+            freeClientAsync(source);
+        else
+            freeClient(source);
+    } else if (server.primary && server.primary == server.current_client) {
         /* The primary is running this command, so it is still in use until the
          * command returns. Free it then instead of caching it. */
         server.primary->flag.dont_cache_primary = 1;
@@ -5197,12 +5405,13 @@ void replicationUnsetPrimary(void) {
      * (that was inherited from the primary at synchronization time) is
      * used as secondary ID up to the current offset, and a new replication
      * ID is created to continue with a new replication history. */
-    shiftReplicationId();
-    /* Disconnecting all the replicas is required: we need to inform replicas
-     * of the replication ID change (see shiftReplicationId() call). However
-     * the replicas will be able to partially resync with us, so it will be
-     * a very fast reconnection. */
-    disconnectReplicas();
+    if (fork_history) {
+        shiftReplicationId();
+        /* Local replicas learn the new history through a partial resync.
+         * Canceling before a shard snapshot was loaded preserves their
+         * original ID, backlog and live connections. */
+        disconnectReplicas();
+    }
     replFreeStreamReader();
     server.repl_state = REPL_STATE_NONE;
 
@@ -5228,15 +5437,17 @@ void replicationUnsetPrimary(void) {
     server.repl_full_sync_complete_duration_ms = -1;
 
     /* Fire the role change modules event. */
-    moduleFireServerEvent(VALKEYMODULE_EVENT_REPLICATION_ROLE_CHANGED, VALKEYMODULE_EVENT_REPLROLECHANGED_NOW_PRIMARY,
-                          NULL);
+    if (!was_shard_source_attached) {
+        moduleFireServerEvent(VALKEYMODULE_EVENT_REPLICATION_ROLE_CHANGED, VALKEYMODULE_EVENT_REPLROLECHANGED_NOW_PRIMARY,
+                              NULL);
+    }
 
     /* Restart the AOF subsystem in case we shut it down during a sync when
      * we were still a replica. */
     if (server.aof_enabled && server.aof_state == AOF_OFF) restartAOFAfterSYNC();
 
     /* Cancel any ongoing atomic slot migrations */
-    clusterCleanSlotImportsOnPromotion();
+    if (!was_shard_source_attached) clusterCleanSlotImportsOnPromotion();
 }
 
 /* This function is called when the replica lose the connection with the
@@ -5347,7 +5558,7 @@ void roleCommand(client *c) {
         return;
     }
 
-    if (server.primary_host == NULL) {
+    if (!isReplicationReplica()) {
         listIter li;
         listNode *ln;
         void *mbcount;
@@ -5360,6 +5571,7 @@ void roleCommand(client *c) {
         listRewind(server.replicas, &li);
         while ((ln = listNext(&li))) {
             client *replica = ln->value;
+            if (replica->repl_data->shard_topology) continue;
             char ip[NET_IP_STR_LEN], *replica_addr = replica->repl_data->replica_addr;
 
             if (!replica_addr) {
@@ -5622,6 +5834,8 @@ void refreshGoodReplicasCount(void) {
     listRewind(server.replicas, &li);
     while ((ln = listNext(&li))) {
         client *replica = ln->value;
+        /* A cross-cluster copy cannot fail over as a replica of this shard. */
+        if (replica->repl_data->shard_topology) continue;
         time_t lag = server.unixtime - replica->repl_data->repl_ack_time;
 
         if (replica->repl_data->repl_state == REPLICA_STATE_ONLINE && lag <= server.repl_min_replicas_max_lag) good++;
@@ -5691,7 +5905,7 @@ int replicationCountAcksByOffset(long long offset) {
     while ((ln = listNext(&li))) {
         client *replica = ln->value;
 
-        if (replica->repl_data->repl_state != REPLICA_STATE_ONLINE) continue;
+        if (replica->repl_data->shard_topology || replica->repl_data->repl_state != REPLICA_STATE_ONLINE) continue;
         if (replica->repl_data->repl_ack_off >= offset) count++;
     }
     return count;
@@ -5708,7 +5922,7 @@ int replicationCountAOFAcksByOffset(long long offset) {
     while ((ln = listNext(&li))) {
         client *replica = ln->value;
 
-        if (replica->repl_data->repl_state != REPLICA_STATE_ONLINE) continue;
+        if (replica->repl_data->shard_topology || replica->repl_data->repl_state != REPLICA_STATE_ONLINE) continue;
         if (replica->repl_data->repl_aof_off >= offset) count++;
     }
     return count;
@@ -5939,7 +6153,7 @@ void handleBioThreadFinishedRDBDownload(void) {
      * gotten here in the first place */
     debugServerAssert(conn);
 
-    replicaBeforeLoadPrimaryRDB(conn, 0);
+    if (replicaBeforeLoadPrimaryRDB(conn, 0) == C_ERR) return;
     if (replicaLoadPrimaryRDBFromDisk(&rsi) == C_ERR || replicaCheckFullSyncOffsetFromRdb(&rsi) == C_ERR) {
         serverLog(LL_WARNING, "Failed to load RDB");
         cancelReplicationHandshake(1);

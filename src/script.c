@@ -138,7 +138,7 @@ int scriptPrepareForRun(scriptRunCtx *run_ctx,
     int client_allow_oom = !!(caller->flag.allow_oom);
 
     int running_stale =
-        server.primary_host && server.repl_state != REPL_STATE_CONNECTED && server.repl_serve_stale_data == 0;
+        isReplicationReplica() && server.repl_state != REPL_STATE_CONNECTED && server.repl_serve_stale_data == 0;
     int obey_client = mustObeyClient(caller);
 
     if (!(script_flags & SCRIPT_FLAG_EVAL_COMPAT_MODE)) {

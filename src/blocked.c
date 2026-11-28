@@ -250,6 +250,9 @@ void unblockClient(client *c, int queue_for_reprocessing) {
     case BLOCKED_SHUTDOWN:
         /* No special cleanup. */
         break;
+    case BLOCKED_SHARDREPL:
+        replicationCancelShardRequest(c);
+        break;
     case BLOCKED_INUSE:
         unlinkBlockInUseClient(c);
         break;

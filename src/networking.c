@@ -6499,7 +6499,7 @@ void helloCommand(client *c) {
 
     if (!server.sentinel_mode) {
         addReplyBulkCString(c, "role");
-        addReplyBulkCString(c, server.primary_host ? "replica" : "master");
+        addReplyBulkCString(c, isReplicationReplica() ? "replica" : "master");
     }
 
     addReplyBulkCString(c, "modules");

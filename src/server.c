@@ -241,7 +241,7 @@ void serverLogRaw(int level, const char *msg) {
         } else if (pid != server.pid) {
             role_index = 1; /* RDB / AOF writing child. */
         } else {
-            role_index = (server.primary_host ? 2 : 3); /* Replica or Primary. */
+            role_index = (isReplicationReplica() ? 2 : 3); /* Replica or Primary. */
         }
         switch (server.log_format) {
         case LOG_FORMAT_LOGFMT:
@@ -1368,7 +1368,7 @@ void databasesCron(void) {
     /* Expire keys by random sampling. Not required for replicas
      * as primary will synthesize DELs for us. */
     if (server.active_expire_enabled) {
-        if (!iAmPrimary()) {
+        if (!isExpirationPrimary()) {
             expireReplicaKeys();
         } else {
             if (!server.import_mode) {
@@ -2013,7 +2013,7 @@ void beforeSleep(struct aeEventLoop *eventLoop) {
     /* Run a fast expire cycle (the called function will return
      * ASAP if a fast cycle is not needed). */
     ustime_t expire_cycle_time = 0;
-    if (server.active_expire_enabled && !server.import_mode && iAmPrimary()) {
+    if (server.active_expire_enabled && !server.import_mode && isExpirationPrimary()) {
         expire_cycle_time = activeExpireCycle(ACTIVE_EXPIRE_CYCLE_FAST);
     }
 
@@ -2647,7 +2647,7 @@ int restartServer(client *c, int flags, mstime_t delay) {
  * depending on current role.
  */
 int setOOMScoreAdj(int process_class) {
-    if (process_class == -1) process_class = (server.primary_host ? CONFIG_OOM_REPLICA : CONFIG_OOM_PRIMARY);
+    if (process_class == -1) process_class = (isReplicationReplica() ? CONFIG_OOM_REPLICA : CONFIG_OOM_PRIMARY);
 
     serverAssert(process_class >= 0 && process_class < CONFIG_OOM_COUNT);
 
@@ -4682,6 +4682,14 @@ void unprepareCommand(client *c) {
     c->slot = -1;
 }
 
+/* Source topology commands carry foreign node IDs. Only apply and forward
+ * commands whose keys can be served by the destination shard. */
+static bool shardStreamAcceptsCommand(client *c) {
+    if (!c->cmd || c->cmd->proc == clusterCommand) return false;
+    if (c->read_flags & (READ_FLAGS_CROSSSLOT | READ_FLAGS_BAD_ARITY)) return false;
+    return c->slot < 0 || getNodeBySlot(c->slot) == getMyClusterNode();
+}
+
 /* If this function gets called we already read a whole
  * command, arguments are in the client argv/argc fields.
  * processCommand() execute the command or prepare the
@@ -4738,6 +4746,13 @@ int processCommand(client *c) {
             serverAssert(c->read_flags & READ_FLAGS_COMMAND_NOT_FOUND);
         }
         c->cmd = c->lastcmd = c->realcmd = cmd;
+
+        if (c->flag.primary && server.shard_replicating && !shardStreamAcceptsCommand(c)) {
+            serverLog(LL_WARNING, "Stopping shard replication on an incompatible upstream command");
+            c->flag.dont_cache_primary = 1;
+            freeClientAsync(c);
+            return C_ERR;
+        }
 
         if (authRequired(c)) {
             /* AUTH and HELLO and no auth commands are valid even in
@@ -4923,7 +4938,7 @@ int processCommand(client *c) {
     }
 
     /* Block client writes in read-only mode while allowing replication and AOF replay. */
-    if (is_write_command && !obey_client && clusterIsReadOnly()) {
+    if (is_write_command && !obey_client && clusterClientWritesBlocked()) {
         rejectCommand(c, shared.roclustererr, 1);
         return C_OK;
     }
@@ -5027,7 +5042,7 @@ int processCommand(client *c) {
     /* Only allow commands with flag "t", such as INFO, REPLICAOF and so on,
      * when replica-serve-stale-data is no and we are a replica with a broken
      * link with primary. */
-    if (server.primary_host && server.repl_state != REPL_STATE_CONNECTED && server.repl_serve_stale_data == 0 &&
+    if (isReplicationReplica() && server.repl_state != REPL_STATE_CONNECTED && server.repl_serve_stale_data == 0 &&
         is_denystale_command) {
         rejectCommand(c, shared.primarydownerr, 1);
         return C_OK;
@@ -7003,8 +7018,15 @@ sds genValkeyInfoString(dict *section_dict, int all_sections, int everything) {
         info = sdscatprintf(info,
                             "# Replication\r\n"
                             "role:%s\r\n",
-                            server.primary_host == NULL ? "master" : "slave");
-        if (server.primary_host) {
+                            isReplicationReplica() ? "slave" : "master");
+        if (server.shard_replicating) {
+            info = sdscatprintf(info,
+                                "shard_source_host:%s\r\n"
+                                "shard_source_port:%d\r\n"
+                                "shard_source_link_status:%s\r\n",
+                                server.primary_host, server.primary_port,
+                                server.repl_state == REPL_STATE_CONNECTED ? "up" : "down");
+        } else if (server.primary_host) {
             long long replica_repl_offset = 1;
             long long replica_read_repl_offset = 1;
 
@@ -7099,6 +7121,7 @@ sds genValkeyInfoString(dict *section_dict, int all_sections, int everything) {
                                     "offset=%lld,lag=%ld,type=%s",
                                     replica_id, replica_ip, replica->repl_data->replica_listening_port, state,
                                     replica->repl_data->repl_ack_off, lag,
+                                    replica->repl_data->shard_topology ? "shard-replica" :
                                     replica->flag.repl_rdb_channel                                ? "rdb-channel"
                                     : replica->repl_data->repl_state == REPLICA_STATE_BG_RDB_LOAD ? "main-channel"
                                                                                                   : "replica");
@@ -7964,6 +7987,16 @@ int serverIsSupervised(int mode) {
     if (ret) server.supervised_mode = mode;
 
     return ret;
+}
+
+/* A shard receiving an external replication stream still serves clients as a primary. */
+bool isReplicationReplica(void) {
+    return server.primary_host != NULL && !server.shard_replicating;
+}
+
+/* The upstream owns expiration and sends the resulting deletions in its replication stream. */
+bool isExpirationPrimary(void) {
+    return iAmPrimary() && !server.shard_replicating;
 }
 
 int iAmPrimary(void) {

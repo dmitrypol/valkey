@@ -156,4 +156,25 @@ start_cluster 1 0 {tags {modules external:skip cluster}} {
         assert_equal OK [R 0 datatype.set dtkey 2 after]
         assert_equal {2 after} [R 0 datatype.get dtkey]
     }
+
+    start_server {tags {modules external:skip cluster} overrides {cluster-enabled yes cluster-databases 16}} {
+        R 0 cluster addslotsrange 0 16383
+        wait_for_cluster_state ok
+        test "Shard replication checks native module type encodings before accepting a snapshot" {
+            assert_equal OK [R 1 datatype.set dtkey 2 source]
+            R 0 set local preserved
+            R 0 cluster setwritemode readonly
+            assert_error {*source topology*} {R 0 cluster shardreplicate [srv -1 host] [srv -1 port]}
+            assert_equal preserved [R 0 get local]
+            R 0 module load [file normalize tests/modules/datatype.so]
+            assert_equal OK [R 0 cluster shardreplicate [srv -1 host] [srv -1 port]]
+            wait_for_condition 200 50 {
+                [s 0 shard_source_link_status] eq "up"
+            } else {
+                fail "Compatible module snapshot did not finish loading"
+            }
+            assert_equal {2 source} [R 0 datatype.get dtkey]
+            assert_equal 0 [R 0 exists local]
+        }
+    }
 }
